@@ -41,6 +41,8 @@ const Home = () => {
   const [currentDirectory, setCurrentDirectory] = useState("/");
   const [isEditMode, setIsEditMode] = useState(false);
   const [editEditor, setEditEditor] = useState<EditEditor | null>(null);
+  const [history, setHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   
   // refs for dom manipulation
   const inputRef = useRef<HTMLInputElement>(null);
@@ -105,6 +107,12 @@ const Home = () => {
     // special handling for clear command
     if (command.trim() === 'clear') {
       setLines([]);
+      // scroll to bottom after clearing
+      setTimeout(() => {
+        if (containerRef.current) {
+          containerRef.current.scrollTop = containerRef.current.scrollHeight;
+        }
+      }, 0);
       return;
     }
 
@@ -135,6 +143,11 @@ const Home = () => {
           // handle clear marker from backend
           if (response.output.trim() === '__CLEAR_SCREEN__') {
             setLines([]);
+            setTimeout(() => {
+              if (containerRef.current) {
+                containerRef.current.scrollTop = containerRef.current.scrollHeight;
+              }
+            }, 0);
             return;
           }
           // handle multi-line output
@@ -150,9 +163,20 @@ const Home = () => {
 
       // keep current directory state in sync
       setCurrentDirectory(terminal.get_current_directory());
+      // always scroll to bottom after running a command
+      setTimeout(() => {
+        if (containerRef.current) {
+          containerRef.current.scrollTop = containerRef.current.scrollHeight;
+        }
+      }, 0);
     } catch (error) {
       console.error('Command execution error:', error);
       setLines(prev => [...prev, { type: 'error', content: `Error: ${error}` }]);
+      setTimeout(() => {
+        if (containerRef.current) {
+          containerRef.current.scrollTop = containerRef.current.scrollHeight;
+        }
+      }, 0);
     }
   };
 
@@ -160,8 +184,8 @@ const Home = () => {
   const handleEditCommand = (input: string) => {
     if (!terminal) return;
 
-    // log input to terminal history
-    setLines(prev => [...prev, { type: 'input', content: input }]);
+    // don't log edit mode input to terminal history
+    // setLines(prev => [...prev, { type: 'input', content: input }]);
 
     try {
       // pass to wasm with edit_input prefix
@@ -179,7 +203,6 @@ const Home = () => {
           } catch (e) {
             // not editor data, show as regular output
           }
-          
           // display regular command output
           const outputLines = response.output.split('\n');
           setLines(prev => [
@@ -187,11 +210,17 @@ const Home = () => {
             ...outputLines.map((line: string) => ({ type: 'output' as const, content: line }))
           ]);
         }
-        
         // check for exit commands
         if (input === ':q' || input === ':wq') {
           setIsEditMode(false);
           setEditEditor(null);
+          setHistoryIndex(null);
+          // scroll to bottom when returning to terminal mode
+          setTimeout(() => {
+            if (containerRef.current) {
+              containerRef.current.scrollTop = containerRef.current.scrollHeight;
+            }
+          }, 0);
         }
       } else {
         setLines(prev => [...prev, { type: 'error', content: response.output }]);
@@ -211,122 +240,179 @@ const Home = () => {
       setCurrent('');
       return;
     }
+    // up arrow: previous command
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (history.length === 0) return;
+      setHistoryIndex(prev => {
+        let idx = prev === null ? history.length - 1 : prev - 1;
+        if (idx < 0) idx = 0;
+        setCurrent(history[idx]);
+        return idx;
+      });
+      return;
+    }
+    // down arrow: next command
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (history.length === 0) return;
+      setHistoryIndex(prev => {
+        let idx = prev === null ? history.length - 1 : prev + 1;
+        if (idx >= history.length) {
+          setCurrent('');
+          return null;
+        }
+        setCurrent(history[idx]);
+        return idx;
+      });
+      return;
+    }
     if (e.key === 'Enter') {
       executeCommand(current);
+      setHistory(prev => (current && (prev.length === 0 || prev[prev.length - 1] !== current)) ? [...prev, current] : prev);
+      setHistoryIndex(null);
       setCurrent('');
     }
   };
 
   // execute predefined commands (for quick actions)
   const handleQuickCommand = (command: string) => {
-    if (isEditMode) return;
-    setCurrent(command);
-    executeCommand(command);
-    setCurrent('');
+    if (!terminal) return;
+
+    // special clear command handling
+    if (command.trim() === 'clear') {
+      setLines([]);
+      terminal.execute_command('clear');
+      return;
+    }
+
+    // regular command execution
+    terminal.execute_command(command);
   };
 
+  // handle drag and drop file upload
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
 
-  // loading screen
-  if (isLoading) {
-    return (
-      <div className="w-screen h-screen bg-black flex items-center justify-center">
-        <div className="text-white text-xl">Loading terminal...</div>
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+
+    // send each file to the terminal
+    files.forEach(file => {
+      // use webkitRelativePath if available, otherwise just use the file name
+      const filePath = file.webkitRelativePath || file.name;
+      if (filePath) {
+        setLines(prev => [...prev, { type: 'input', content: `upload ${filePath}` }]);
+        terminal.execute_command(`upload ${filePath}`);
+      }
+    });
+  };
+
+  // handle file input change (for manual file selection)
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    // send each file to the terminal
+    files.forEach(file => {
+      // use webkitRelativePath if available, otherwise just use the file name
+      const filePath = file.webkitRelativePath || file.name;
+      if (filePath) {
+        setLines(prev => [...prev, { type: 'input', content: `upload ${filePath}` }]);
+        terminal.execute_command(`upload ${filePath}`);
+      }
+    });
+  };
+
+  // handle drag over event (to allow drops)
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  // render terminal line
+  const renderLine = (line: TerminalLine, index: number) => {
+    switch (line.type) {
+      case 'input':
+        return <div key={index} className="text-green-400">{`> ${line.content}`}</div>;
+      case 'output':
+        return <div key={index} className="text-white">{line.content}</div>;
+      case 'error':
+        return <div key={index} className="text-red-400">{line.content}</div>;
+      default:
+        return null;
+    }
+  };
+
+  // render editor line
+  const renderEditLine = (line: EditLine, index: number) => {
+    return <div key={index} className="flex items-center">
+      <div className="text-gray-500 pr-2">{`#${line.number}`}</div>
+      <div className="flex-1">
+        <div className="bg-gray-800 p-2 rounded-md">
+          <pre className="text-white whitespace-pre-wrap break-words">{line.content}</pre>
+        </div>
       </div>
-    );
-  }
+    </div>;
+  };
 
-  // main terminal ui
   return (
-    <div
-      ref={containerRef}
-      className="w-screen h-screen bg-black flex flex-col overflow-hidden"
-      style={{ fontFamily: FONT }}
-      onClick={() => inputRef.current?.focus()}
-    >
+    <div className="flex flex-col h-screen">
+      {/* Terminal output container */}
+      <div ref={containerRef} className="flex-1 p-4 overflow-auto bg-black">
+        {/* Render terminal lines */}
+        {lines.map(renderLine)}
 
-      {/* terminal content area */}
-      <div className="flex-1 overflow-y-auto p-4 hide-scrollbar">
-        <div className="text-white font-mono text-lg w-full">
-          {/* editor view when in edit mode */}
-          {isEditMode && editEditor ? (
-            <div className="mb-4">
-              {/* file editor ui */}
-              <div className="border border-gray-700 rounded p-4 mb-4">
-                <div className="text-gray-300 mb-2">
-                  <span className="text-cyan-400">{editEditor.filename}</span>
-                  <span className="text-gray-500 ml-4">({editEditor.total_lines} lines)</span>
-                </div>
-                <div 
-                  ref={editContentRef}
-                  className="bg-black border border-gray-600 p-2 max-h-96 overflow-y-auto hide-scrollbar"
-                >
-                  {editEditor.lines.length === 0 ? (
-                    <div className="text-gray-500 italic">Empty file</div>
-                  ) : (
-                    editEditor.lines.map((line, idx) => (
-                      <div key={idx} className="flex">
-                        <span className="text-gray-500 text-sm w-8 text-right mr-2 flex-shrink-0">
-                          {line.number}
-                        </span>
-                        <span className="flex-1 font-mono text-sm whitespace-pre">
-                          {line.content || <span className="text-gray-600">{"<empty>"}</span>}
-                        </span>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
+        {/* Edit mode content */}
+        {isEditMode && editEditor && (
+          <div className="mt-4">
+            {/* Render editor lines */}
+            {editEditor.lines.map(renderEditLine)}
+
+            {/* Help text */}
+            <div className="text-gray-500 text-sm mt-2">
+              {editEditor.help}
             </div>
-          ) : (
-            /* normal terminal output history */
-            lines.map((line, idx) => (
-              <div key={idx} className="flex w-full items-start mb-1">
-                {line.type === 'input' ? (
-                  <>
-                    <span className="text-purple-400 flex-shrink-0 flex items-center justify-center h-full">
-                      <Image alt="trifledmatter-logo" width={32} height={32} src={Logo} className="w-4 h-4" />
-                      &nbsp;
-                    </span>
-                    <span className="text-cyan-400 flex-shrink-0 mr-2 font-bold">
-                      [virt::core] ➤
-                    </span>
-                    <span className="flex-1 break-all">{line.content}</span>
-                  </>
-                ) : line.type === 'error' ? (
-                  <span className="flex-1 break-all text-red-400 ml-7">{line.content}</span>
-                ) : (
-                  <span className="flex-1 break-all text-gray-300 ml-7 whitespace-pre-wrap">{line.content}</span>
-                )}
-              </div>
-            ))
-          )}
-          
-          {/* input prompt line */}
-          <div className="flex w-full items-center">
-            <span className="text-purple-400 flex-shrink-0 flex items-center justify-center">
-              <Image alt="trifledmatter-logo" width={32} height={32} src={Logo} className="w-4 h-4" />
-              &nbsp;
-            </span>
-            <span className="text-cyan-400 flex-shrink-0 mr-2 font-bold">
-              {isEditMode ? '[edit]' : '[virt::core]'} ➤
-            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Terminal input field */}
+      <div className="p-4 bg-gray-900">
+        <div className="flex">
+          {/* Logo */}
+          <div className="pr-4">
+            <Image src={Logo} alt="Logo" width={32} height={32} />
+          </div>
+
+          {/* Input container */}
+          <div className="flex-1">
             <input
               ref={inputRef}
-              className="bg-transparent outline-none border-none text-white font-mono text-lg flex-1 caret-cyan-400"
-              style={{ fontFamily: FONT }}
               value={current}
               onChange={handleInput}
               onKeyDown={handleKeyDown}
-              autoFocus
-              spellCheck={false}
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-              placeholder={isEditMode ? "Enter line number and content (e.g., '5 push 10', '* ;') or :q, :w, :wq" : ""}
+              className="w-full p-2 bg-gray-800 text-white rounded-md focus:outline-none"
+              placeholder="Type your command here..."
             />
           </div>
         </div>
       </div>
+
+      {/* Loader overlay */}
+      {isLoading && (
+        <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-75 z-50">
+          <div className="text-white">Loading...</div>
+        </div>
+      )}
+
+      {/* Drag and drop area */}
+      <div
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+        className="fixed inset-0 z-40"
+      />
     </div>
   );
 };

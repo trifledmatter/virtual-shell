@@ -68,7 +68,7 @@ impl Command for HelpCommand {
                     "env" | "export" | "set" | "alias" | "unalias" | "source" | "functions" => {
                         env_ops.push(cmd);
                     }
-                    "help" | "history" => {
+                    "help" | "history" | "clear" | "rawcreate" => {
                         other_ops.push(cmd);
                     }
                     _ => {
@@ -162,6 +162,8 @@ fn get_command_help(cmd_name: &str) -> String {
         "history" => "history\nDisplay command history\n\nOptions:\n  --help    display this help and exit".to_string(),
         "cpu" => "cpu SUBCOMMAND [ARGS]...\nCPU emulator commands\n\nSubcommands:\n  run FILE      execute assembly file\n  debug FILE    debug assembly file step by step\n  template TYPE create assembly template\n  --help        display this help and exit".to_string(),
         "edit" => "edit FILE\nOpen FILE in nano-style editor\n\nOptions:\n  --help    display this help and exit".to_string(),
+        "clear" => "clear\nClear the terminal screen\n\nOptions:\n  --help    display this help and exit".to_string(),
+        "rawcreate" => "rawcreate <PATH> <HEX BYTES...>\ncreate a file with arbitrary bytes (hex)\n\nOptions:\n  --help    display this help and exit".to_string(),
         _ => format!("{} - No detailed help available\n\nTry running '{} --help' for more information.", cmd_name, cmd_name),
     }
-} 
+}
