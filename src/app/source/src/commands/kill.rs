@@ -61,7 +61,7 @@ impl Command for KillCommand {
         }
         
         // gotta have something to kill
-        if pids.empty() {
+        if pids.is_empty() {
             return Err("kill: missing pid operand".to_string());
         }
         

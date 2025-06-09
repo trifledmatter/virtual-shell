@@ -1,5 +1,5 @@
 use crate::command::{Command, CommandResult};
-use crate::context::TerminalContext};
+use crate::context::TerminalContext;
 use crate::vfs::VfsNode;
 
 /// rmdir [OPTION]... DIRECTORY...

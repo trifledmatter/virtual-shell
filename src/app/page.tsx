@@ -358,43 +358,92 @@ const Home = () => {
   };
 
   return (
-    <div className="flex flex-col h-screen">
-      {/* Terminal output container */}
-      <div ref={containerRef} className="flex-1 p-4 overflow-auto bg-black">
-        {/* Render terminal lines */}
-        {lines.map(renderLine)}
+    <div
+      ref={containerRef}
+      className="w-screen h-screen bg-black flex flex-col overflow-hidden"
+      style={{ fontFamily: FONT }}
+      onClick={() => inputRef.current?.focus()}
+    >
 
-        {/* Edit mode content */}
-        {isEditMode && editEditor && (
-          <div className="mt-4">
-            {/* Render editor lines */}
-            {editEditor.lines.map(renderEditLine)}
-
-            {/* Help text */}
-            <div className="text-gray-500 text-sm mt-2">
-              {editEditor.help}
+      {/* terminal content area */}
+      <div className="flex-1 overflow-y-auto p-4 hide-scrollbar">
+        <div className="text-white font-mono text-lg w-full">
+          {/* editor view when in edit mode */}
+          {isEditMode && editEditor ? (
+            <div className="mb-4">
+              {/* file editor ui */}
+              <div className="border border-gray-700 rounded p-4 mb-4">
+                <div className="text-gray-300 mb-2">
+                  <span className="text-cyan-400">{editEditor.filename}</span>
+                  <span className="text-gray-500 ml-4">({editEditor.total_lines} lines)</span>
+                </div>
+                <div 
+                  ref={editContentRef}
+                  className="bg-black border border-gray-600 p-2 max-h-96 overflow-y-auto hide-scrollbar"
+                >
+                  {editEditor.lines.length === 0 ? (
+                    <div className="text-gray-500 italic">Empty file</div>
+                  ) : (
+                    editEditor.lines.map((line, idx) => (
+                      <div key={idx} className="flex">
+                        <span className="text-gray-500 text-sm w-8 text-right mr-2 flex-shrink-0">
+                          {line.number}
+                        </span>
+                        <span className="flex-1 font-mono text-sm whitespace-pre">
+                          {line.content || <span className="text-gray-600">{"<empty>"}</span>}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
             </div>
-          </div>
-        )}
-      </div>
-
-      {/* Terminal input field */}
-      <div className="p-4 bg-gray-900">
-        <div className="flex">
-          {/* Logo */}
-          <div className="pr-4">
-            <Image src={Logo} alt="Logo" width={32} height={32} />
-          </div>
-
-          {/* Input container */}
-          <div className="flex-1">
+          ) : (
+            /* normal terminal output history */
+            lines.map((line, idx) => (
+              <div key={idx} className="flex w-full items-start mb-1">
+                {line.type === 'input' ? (
+                  <>
+                    <span className="text-purple-400 flex-shrink-0 flex items-center justify-center h-full">
+                      <Image alt="trifledmatter-logo" width={32} height={32} src={Logo} className="w-4 h-4" />
+                      &nbsp;
+                    </span>
+                    <span className="text-cyan-400 flex-shrink-0 mr-2 font-bold">
+                      [virt::core] ➤
+                    </span>
+                    <span className="flex-1 break-all">{line.content}</span>
+                  </>
+                ) : line.type === 'error' ? (
+                  <span className="flex-1 break-all text-red-400 ml-7">{line.content}</span>
+                ) : (
+                  <span className="flex-1 break-all text-gray-300 ml-7 whitespace-pre-wrap">{line.content}</span>
+                )}
+              </div>
+            ))
+          )}
+          
+          {/* input prompt line */}
+          <div className="flex w-full items-center">
+            <span className="text-purple-400 flex-shrink-0 flex items-center justify-center">
+              <Image alt="trifledmatter-logo" width={32} height={32} src={Logo} className="w-4 h-4" />
+              &nbsp;
+            </span>
+            <span className="text-cyan-400 flex-shrink-0 mr-2 font-bold">
+              {isEditMode ? '[edit]' : '[virt::core]'} ➤
+            </span>
             <input
               ref={inputRef}
+              className="bg-transparent outline-none border-none text-white font-mono text-lg flex-1 caret-cyan-400"
+              style={{ fontFamily: FONT }}
               value={current}
               onChange={handleInput}
               onKeyDown={handleKeyDown}
-              className="w-full p-2 bg-gray-800 text-white rounded-md focus:outline-none"
-              placeholder="Type your command here..."
+              autoFocus
+              spellCheck={false}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              placeholder={isEditMode ? "Enter line number and content (e.g., '5 push 10', '* ;') or :q, :w, :wq" : ""}
             />
           </div>
         </div>

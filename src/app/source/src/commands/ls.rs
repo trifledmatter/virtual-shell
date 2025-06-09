@@ -159,5 +159,4 @@ impl Command for LsCommand {
         
         Ok(out)
     }
-    }
 }
