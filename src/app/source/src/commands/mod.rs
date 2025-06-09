@@ -30,3 +30,4 @@ pub mod edit;
 pub mod cat;
 pub mod cd;
 pub mod help;
+pub mod clear;

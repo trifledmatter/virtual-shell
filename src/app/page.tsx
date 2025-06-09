@@ -102,6 +102,12 @@ const Home = () => {
       return;
     }
 
+    // special handling for clear command
+    if (command.trim() === 'clear') {
+      setLines([]);
+      return;
+    }
+
     // regular command execution flow
     setLines(prev => [...prev, { type: 'input', content: command }]);
 
@@ -126,7 +132,11 @@ const Home = () => {
               console.log('Failed to parse edit output as JSON, treating as regular output');
             }
           }
-          
+          // handle clear marker from backend
+          if (response.output.trim() === '__CLEAR_SCREEN__') {
+            setLines([]);
+            return;
+          }
           // handle multi-line output
           const outputLines = response.output.split('\n');
           setLines(prev => [
@@ -194,6 +204,13 @@ const Home = () => {
 
   // handle enter key for command execution
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // Ctrl+L: clear screen
+    if (e.ctrlKey && e.key === 'l') {
+      e.preventDefault();
+      executeCommand('clear');
+      setCurrent('');
+      return;
+    }
     if (e.key === 'Enter') {
       executeCommand(current);
       setCurrent('');

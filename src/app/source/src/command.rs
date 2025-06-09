@@ -61,6 +61,7 @@ impl CommandRegistry {
         reg.register_command("cat", Box::new(crate::commands::cat::CatCommand));
         reg.register_command("cd", Box::new(crate::commands::cd::CdCommand));
         reg.register_command("help", Box::new(crate::commands::help::HelpCommand));
+        reg.register_command("clear", Box::new(crate::commands::clear::ClearCommand));
         reg
     }
 }
