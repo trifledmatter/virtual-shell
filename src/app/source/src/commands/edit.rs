@@ -140,7 +140,32 @@ impl Command for EditInputCommand {
                         let content = if parts.len() > 1 { parts[1] } else { "" };
                         edit_line(ctx, &filename, line_num, content)
                     } else {
-                        Err(format!("Invalid command: '{}'. Use :q, :w, :wq, <line_number> <content>, or * <content>", input))
+                        // if not a number or '*', append to next empty line or add as new line
+                        let content = input;
+                        let buffer = ctx.get_var("_edit_buffer")
+                            .map(|s| s.clone())
+                            .unwrap_or_else(|| String::new());
+                        let mut lines: Vec<String> = if buffer.is_empty() {
+                            vec![]
+                        } else {
+                            buffer.lines().map(|s| s.to_string()).collect()
+                        };
+                        // find first empty line
+                        let mut added = false;
+                        for line in lines.iter_mut() {
+                            if line.trim().is_empty() {
+                                *line = content.to_string();
+                                added = true;
+                                break;
+                            }
+                        }
+                        if !added {
+                            lines.push(content.to_string());
+                        }
+                        let new_buffer = lines.join("\n");
+                        ctx.set_var("_edit_buffer", &new_buffer);
+                        ctx.set_var("_edit_modified", "true");
+                        render_editor(ctx, &filename, &new_buffer)
                     }
                 } else {
                     Err("Invalid input format. Use <line_number> <content> or * <content>".to_string())
@@ -223,4 +248,4 @@ fn edit_all_lines(ctx: &mut TerminalContext, filename: &str, content: &str) -> C
     
     // show updated editor view
     render_editor(ctx, filename, &new_buffer)
-} 
+}
