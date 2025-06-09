@@ -4,6 +4,7 @@ use crate::context::TerminalContext;
 // all the instructions our tiny cpu understands
 #[derive(Debug, Clone, Copy)]
 pub enum Instruction {
+    // Stack/ALU
     Push(i32),     // push value onto stack
     Pop,           // remove top value
     Add,           // add two values
@@ -13,16 +14,43 @@ pub enum Instruction {
     Mod,           // modulo (a%b where b is top)
     Dup,           // duplicate top value
     Swap,          // swap top two values
+    // Memory
     Load(usize),   // load from memory address
     Store(usize),  // store to memory address
+    // Control flow
     Jump(usize),   // unconditional jump
     JumpIf(usize), // jump if top != 0
     JumpIfZ(usize), // jump if top == 0
     Cmp,           // compare: 1 if a>b, 0 if a==b, -1 if a<b
+    // I/O
     Print,         // print top as number
     PrintChar,     // print top as ascii char
     Read,          // read int from input (stubbed for now)
     Halt,          // stop execution
+    // --- RISC-V style extensions ---
+    Addi(i32),     // add immediate
+    And,           // bitwise and
+    Andi(i32),     // bitwise and immediate
+    Or,            // bitwise or
+    Ori(i32),      // bitwise or immediate
+    Xor,           // bitwise xor
+    Xori(i32),     // bitwise xor immediate
+    Sll,           // shift left logical
+    Srl,           // shift right logical
+    Sra,           // shift right arithmetic
+    Lui(i32),      // load upper immediate
+    Auipc(i32),    // add upper immediate to pc
+    // Branches
+    Beq(usize),    // branch if equal
+    Bne(usize),    // branch if not equal
+    Blt(usize),    // branch if less than
+    Bge(usize),    // branch if greater or equal
+    // Function call/return
+    Call(usize),   // call function (push return address)
+    Ret,           // return from function
+    // Stack frame helpers
+    PushRa,        // push return address
+    PopRa,         // pop return address
 }
 
 pub struct CpuCommand;
@@ -276,17 +304,85 @@ pub fn assemble(src: &str) -> Result<Vec<Instruction>, String> {
             ["printchar"] => program.push(Instruction::PrintChar),
             ["read"] => program.push(Instruction::Read),
             ["halt"] => program.push(Instruction::Halt),
+            // --- RISC-V style extensions ---
+            ["addi", n] => {
+                let val = n.parse().map_err(|_| format!("Invalid immediate at line {}", i+1))?;
+                program.push(Instruction::Addi(val));
+            }
+            ["and"] => program.push(Instruction::And),
+            ["andi", n] => {
+                let val = n.parse().map_err(|_| format!("Invalid immediate at line {}", i+1))?;
+                program.push(Instruction::Andi(val));
+            }
+            ["or"] => program.push(Instruction::Or),
+            ["ori", n] => {
+                let val = n.parse().map_err(|_| format!("Invalid immediate at line {}", i+1))?;
+                program.push(Instruction::Ori(val));
+            }
+            ["xor"] => program.push(Instruction::Xor),
+            ["xori", n] => {
+                let val = n.parse().map_err(|_| format!("Invalid immediate at line {}", i+1))?;
+                program.push(Instruction::Xori(val));
+            }
+            ["sll"] => program.push(Instruction::Sll),
+            ["srl"] => program.push(Instruction::Srl),
+            ["sra"] => program.push(Instruction::Sra),
+            ["lui", n] => {
+                let val = n.parse().map_err(|_| format!("Invalid immediate at line {}", i+1))?;
+                program.push(Instruction::Lui(val));
+            }
+            ["auipc", n] => {
+                let val = n.parse().map_err(|_| format!("Invalid immediate at line {}", i+1))?;
+                program.push(Instruction::Auipc(val));
+            }
+            // Branches
+            ["beq", target] => {
+                let addr = parse_address(target, &labels, i)
+                    .map_err(|e| format!("Invalid branch target at line {}: {}", i+1, e))?;
+                program.push(Instruction::Beq(addr));
+            }
+            ["bne", target] => {
+                let addr = parse_address(target, &labels, i)
+                    .map_err(|e| format!("Invalid branch target at line {}: {}", i+1, e))?;
+                program.push(Instruction::Bne(addr));
+            }
+            ["blt", target] => {
+                let addr = parse_address(target, &labels, i)
+                    .map_err(|e| format!("Invalid branch target at line {}: {}", i+1, e))?;
+                program.push(Instruction::Blt(addr));
+            }
+            ["bge", target] => {
+                let addr = parse_address(target, &labels, i)
+                    .map_err(|e| format!("Invalid branch target at line {}: {}", i+1, e))?;
+                program.push(Instruction::Bge(addr));
+            }
+            // Function call/return
+            ["call", target] => {
+                let addr = parse_address(target, &labels, i)
+                    .map_err(|e| format!("Invalid call target at line {}: {}", i+1, e))?;
+                program.push(Instruction::Call(addr));
+            }
+            ["ret"] => program.push(Instruction::Ret),
+            // Stack frame helpers
+            ["pushra"] => program.push(Instruction::PushRa),
+            ["popra"] => program.push(Instruction::PopRa),
             _ => return Err(format!("Unknown instruction at line {}: {}", i+1, line)),
         }
     }
     Ok(program)
 }
 
-// resolve address - could be label name or numeric address
+// resolve address - could be label name (with or without ':') or numeric address
 fn parse_address(addr: &str, labels: &std::collections::HashMap<String, usize>, line: usize) 
     -> Result<usize, String> {
+    // support :label syntax
+    let label = if let Some(stripped) = addr.strip_prefix(':') {
+        stripped
+    } else {
+        addr
+    };
     // try label lookup first
-    if let Some(&addr) = labels.get(addr) {
+    if let Some(&addr) = labels.get(label) {
         return Ok(addr);
     }
     // fallback to parsing as number
@@ -433,6 +529,144 @@ pub fn run(program: &[Instruction]) -> String {
                 stack.push(0);
             }
             Instruction::Halt => break,
+            // RISC-V extensions
+            Instruction::Addi(n) => {
+                if let Some(a) = stack.pop() {
+                    stack.push(a + n);
+                }
+            }
+            Instruction::And => {
+                if let (Some(b), Some(a)) = (stack.pop(), stack.pop()) {
+                    stack.push(a & b);
+                }
+            }
+            Instruction::Andi(n) => {
+                if let Some(a) = stack.pop() {
+                    stack.push(a & n);
+                }
+            }
+            Instruction::Or => {
+                if let (Some(b), Some(a)) = (stack.pop(), stack.pop()) {
+                    stack.push(a | b);
+                }
+            }
+            Instruction::Ori(n) => {
+                if let Some(a) = stack.pop() {
+                    stack.push(a | n);
+                }
+            }
+            Instruction::Xor => {
+                if let (Some(b), Some(a)) = (stack.pop(), stack.pop()) {
+                    stack.push(a ^ b);
+                }
+            }
+            Instruction::Xori(n) => {
+                if let Some(a) = stack.pop() {
+                    stack.push(a ^ n);
+                }
+            }
+            Instruction::Sll => {
+                if let (Some(b), Some(a)) = (stack.pop(), stack.pop()) {
+                    stack.push(a << b);
+                }
+            }
+            Instruction::Srl => {
+                if let (Some(b), Some(a)) = (stack.pop(), stack.pop()) {
+                    stack.push(((a as u32) >> (b as u32)) as i32);
+                }
+            }
+            Instruction::Sra => {
+                if let (Some(b), Some(a)) = (stack.pop(), stack.pop()) {
+                    stack.push(a >> b);
+                }
+            }
+            Instruction::Lui(n) => {
+                stack.push(n << 12);
+            }
+            Instruction::Auipc(n) => {
+                stack.push((pc as i32) + (n << 12));
+            }
+            Instruction::Beq(addr) => {
+                if let (Some(b), Some(a)) = (stack.pop(), stack.pop()) {
+                    if a == b {
+                        if addr < program.len() {
+                            pc = addr;
+                            continue;
+                        } else {
+                            output.push_str(&format!("Error: Branch target out of bounds: {}\n", addr));
+                            break;
+                        }
+                    }
+                }
+            }
+            Instruction::Bne(addr) => {
+                if let (Some(b), Some(a)) = (stack.pop(), stack.pop()) {
+                    if a != b {
+                        if addr < program.len() {
+                            pc = addr;
+                            continue;
+                        } else {
+                            output.push_str(&format!("Error: Branch target out of bounds: {}\n", addr));
+                            break;
+                        }
+                    }
+                }
+            }
+            Instruction::Blt(addr) => {
+                if let (Some(b), Some(a)) = (stack.pop(), stack.pop()) {
+                    if a < b {
+                        if addr < program.len() {
+                            pc = addr;
+                            continue;
+                        } else {
+                            output.push_str(&format!("Error: Branch target out of bounds: {}\n", addr));
+                            break;
+                        }
+                    }
+                }
+            }
+            Instruction::Bge(addr) => {
+                if let (Some(b), Some(a)) = (stack.pop(), stack.pop()) {
+                    if a >= b {
+                        if addr < program.len() {
+                            pc = addr;
+                            continue;
+                        } else {
+                            output.push_str(&format!("Error: Branch target out of bounds: {}\n", addr));
+                            break;
+                        }
+                    }
+                }
+            }
+            // Function call/return
+            Instruction::Call(addr) => {
+                stack.push((pc + 1) as i32); // push return address
+                if addr < program.len() {
+                    pc = addr;
+                    continue;
+                } else {
+                    output.push_str(&format!("Error: Call target out of bounds: {}\n", addr));
+                    break;
+                }
+            }
+            Instruction::Ret => {
+                if let Some(ret_addr) = stack.pop() {
+                    let ret_addr = ret_addr as usize;
+                    if ret_addr < program.len() {
+                        pc = ret_addr;
+                        continue;
+                    } else {
+                        output.push_str(&format!("Error: Return address out of bounds: {}\n", ret_addr));
+                        break;
+                    }
+                }
+            }
+            Instruction::PushRa => {
+                stack.push((pc + 1) as i32);
+            }
+            Instruction::PopRa => {
+                stack.pop(); // just pop, user responsible for stack discipline
+            }
         }
         pc += 1;
     }

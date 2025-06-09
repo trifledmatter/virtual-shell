@@ -62,7 +62,7 @@ impl Command for HelpCommand {
                     "ps" | "kill" | "killall" | "cpu" => {
                         system_ops.push(cmd);
                     }
-                    "cat" | "echo" | "grep" | "sed" | "edit" => {
+                    "cat" | "echo" | "grep" | "sed" | "edit" | "curl" | "ping" => {
                         text_ops.push(cmd);
                     }
                     "env" | "export" | "set" | "alias" | "unalias" | "source" | "functions" => {
@@ -164,6 +164,8 @@ fn get_command_help(cmd_name: &str) -> String {
         "edit" => "edit FILE\nOpen FILE in nano-style editor\n\nOptions:\n  --help    display this help and exit".to_string(),
         "clear" => "clear\nClear the terminal screen\n\nOptions:\n  --help    display this help and exit".to_string(),
         "rawcreate" => "rawcreate <PATH> <HEX BYTES...>\ncreate a file with arbitrary bytes (hex)\n\nOptions:\n  --help    display this help and exit".to_string(),
+        "curl" => "curl [OPTIONS] <url>\nTransfer a URL using HTTP(S)\n\nOptions:\n  -o FILE         write output to FILE\n  -I, --head      fetch headers only (HEAD request)\n  -H HEADER       add custom header\n  -A AGENT        set user agent string\n  -s              silent mode (no output)\n  -i              include response headers in output\n  --help          display this help and exit".to_string(),
+        "ping" => "ping [OPTIONS] <url>\nSend HTTP HEAD requests to a URL and report timing\n\nOptions:\n  -c COUNT        number of requests to send (default 4)\n  -i SECONDS      interval between requests (default 1)\n  -w SECONDS      deadline in seconds\n  -q              quiet mode (no output)\n  --help          display this help and exit".to_string(),
         _ => format!("{} - No detailed help available\n\nTry running '{} --help' for more information.", cmd_name, cmd_name),
     }
 }

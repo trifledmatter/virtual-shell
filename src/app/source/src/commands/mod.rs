@@ -31,3 +31,5 @@ pub mod cat;
 pub mod cd;
 pub mod help;
 pub mod clear;
+pub mod ping;
+pub mod curl;
