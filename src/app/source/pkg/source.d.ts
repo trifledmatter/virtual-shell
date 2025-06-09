@@ -6,14 +6,18 @@ export class Terminal {
   free(): void;
   constructor();
   /**
-   * initialize terminal with storage - call this immediately after creating terminal
+   * initialize terminal - call this immediately after creating terminal
+   */
+  init_terminal(): Promise<any>;
+  /**
+   * initialize terminal with storage support - frontend compatibility method
    */
   init_with_storage(): Promise<any>;
-  execute_command(input: string): any;
   /**
-   * Trigger a background save of the VFS to storage
+   * load filesystem data from frontend (ZenFS)
    */
-  trigger_save(): void;
+  load_filesystem_data(files_json: string): any;
+  execute_command(input: string): any;
   get_current_directory(): string;
   list_files(path?: string | null): any;
   read_file(path: string): any;
@@ -25,22 +29,6 @@ export class Terminal {
   get_nano_filename(): string | undefined;
   process_nano_input(input: string): any;
   get_nano_editor_state(): any;
-  /**
-   * get storage statistics and usage info
-   */
-  get_storage_info(): Promise<any>;
-  /**
-   * manually save current vfs state (usually automatic)
-   */
-  manual_save(): Promise<any>;
-  /**
-   * manually reload vfs from storage (destructive!)
-   */
-  manual_reload(): Promise<any>;
-  /**
-   * clear all persistent storage (reset filesystem)
-   */
-  clear_storage(): Promise<any>;
 }
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
@@ -50,9 +38,10 @@ export interface InitOutput {
   readonly set_async_result_callback: (a: any) => void;
   readonly __wbg_terminal_free: (a: number, b: number) => void;
   readonly terminal_new: () => number;
+  readonly terminal_init_terminal: (a: number) => any;
   readonly terminal_init_with_storage: (a: number) => any;
+  readonly terminal_load_filesystem_data: (a: number, b: number, c: number) => any;
   readonly terminal_execute_command: (a: number, b: number, c: number) => any;
-  readonly terminal_trigger_save: (a: number) => void;
   readonly terminal_get_current_directory: (a: number) => [number, number];
   readonly terminal_list_files: (a: number, b: number, c: number) => any;
   readonly terminal_read_file: (a: number, b: number, c: number) => any;
@@ -64,23 +53,17 @@ export interface InitOutput {
   readonly terminal_get_nano_filename: (a: number) => [number, number];
   readonly terminal_process_nano_input: (a: number, b: number, c: number) => any;
   readonly terminal_get_nano_editor_state: (a: number) => any;
-  readonly terminal_get_storage_info: (a: number) => any;
-  readonly terminal_manual_save: (a: number) => any;
-  readonly terminal_manual_reload: (a: number) => any;
-  readonly terminal_clear_storage: (a: number) => any;
   readonly get_assembly_template: (a: number, b: number) => [number, number];
-  readonly __wbindgen_malloc: (a: number, b: number) => number;
-  readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
   readonly __wbindgen_exn_store: (a: number) => void;
   readonly __externref_table_alloc: () => number;
-  readonly __wbindgen_export_4: WebAssembly.Table;
+  readonly __wbindgen_export_2: WebAssembly.Table;
+  readonly __wbindgen_malloc: (a: number, b: number) => number;
+  readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+  readonly __wbindgen_export_5: WebAssembly.Table;
   readonly __wbindgen_free: (a: number, b: number, c: number) => void;
-  readonly __wbindgen_export_6: WebAssembly.Table;
   readonly _dyn_core__ops__function__FnMut_____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__hb7ade31a031a667e: (a: number, b: number) => void;
-  readonly closure209_externref_shim_multivalue_shim: (a: number, b: number, c: any) => [number, number];
-  readonly __externref_table_dealloc: (a: number) => void;
-  readonly closure261_externref_shim: (a: number, b: number, c: any) => void;
-  readonly closure924_externref_shim: (a: number, b: number, c: any, d: any) => void;
+  readonly closure150_externref_shim: (a: number, b: number, c: any) => void;
+  readonly closure818_externref_shim: (a: number, b: number, c: any, d: any) => void;
   readonly __wbindgen_start: () => void;
 }
 

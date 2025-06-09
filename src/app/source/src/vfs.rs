@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use chrono::{DateTime, Local};
+use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Permissions {
     pub user: u8,  // bits: rwx
     pub group: u8, // bits: rwx
@@ -138,7 +139,7 @@ impl VirtualFileSystem {
             file_name.to_string(),
             VfsNode::File {
                 name: file_name.to_string(),
-                content,
+                content: content.clone(),
                 permissions: Permissions::default_file(),
                 mtime: Local::now(),
             },
@@ -158,7 +159,7 @@ impl VirtualFileSystem {
     pub fn write_file(&mut self, path: &str, content: Vec<u8>) -> Result<(), String> {
         match self.resolve_path_mut(path) {
             Some(VfsNode::File { content: file_content, mtime, .. }) => {
-                *file_content = content;
+                *file_content = content.clone();
                 *mtime = Local::now();
                 Ok(())
             }
@@ -175,7 +176,8 @@ impl VirtualFileSystem {
                 _ => None,
             })
             .ok_or("Parent directory not found")?;
-        parent.remove(name).map(|_| ()).ok_or("Node not found".to_string())
+        let result = parent.remove(name).map(|_| ()).ok_or("Node not found".to_string());
+        result
     }
 
     // mkdir - errors if exists already

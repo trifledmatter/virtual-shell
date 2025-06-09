@@ -4,7 +4,6 @@ pub mod vfs;
 pub mod command;
 pub mod context;
 pub mod commands;
-pub mod storage;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures;
@@ -12,7 +11,7 @@ use context::TerminalContext;
 use command::{CommandRegistry};
 use serde::{Serialize, Deserialize};
 use std::io::{Read, Write};
-use storage::PersistentStorage;
+use web_sys::{window, CustomEvent, CustomEventInit};
 
 // better errors in browser console
 #[cfg(feature = "console_error_panic_hook")]
@@ -41,13 +40,34 @@ pub fn send_async_result(result: &str) {
     }
 }
 
+// Helper function to emit VFS events for frontend persistence
+fn emit_vfs_event(event_type: &str, path: &str, content: Option<&[u8]>) {
+    if let Some(win) = window() {
+        let mut event_detail = serde_json::json!({
+            "path": path
+        });
+        
+        // Add content for write operations
+        if let Some(content_bytes) = content {
+            event_detail["content"] = serde_json::json!(content_bytes);
+        }
+        
+        // Create custom event
+        let mut event_init = CustomEventInit::new();
+        event_init.set_detail(&serde_wasm_bindgen::to_value(&event_detail).unwrap_or(JsValue::NULL));
+        
+        if let Ok(custom_event) = CustomEvent::new_with_event_init_dict(event_type, &event_init) {
+            let _ = win.dispatch_event(&custom_event);
+        }
+    }
+}
+
 // main terminal struct - keeps state between calls
 // ctx = context, registry = available commands
 #[wasm_bindgen]
 pub struct Terminal {
     ctx: TerminalContext,
     registry: CommandRegistry,
-    storage: PersistentStorage,
 }
 
 // response wrapper for js comms
@@ -79,41 +99,114 @@ impl Terminal {
         Terminal {
             ctx,
             registry,
-            storage: PersistentStorage::new(),
         }
     }
 
-    /// initialize terminal with storage - call this immediately after creating terminal
+    /// initialize terminal - call this immediately after creating terminal
+    #[wasm_bindgen]
+    pub async fn init_terminal(&mut self) -> JsValue {
+        // no saved data or error loading, use fresh vfs
+        serde_wasm_bindgen::to_value(&serde_json::json!({
+            "success": true,
+            "message": "terminal initialized with fresh filesystem"
+        })).unwrap()
+    }
+
+    /// initialize terminal with storage support - frontend compatibility method
     #[wasm_bindgen]
     pub async fn init_with_storage(&mut self) -> JsValue {
-        // init storage first
-        match self.storage.init().await {
-            Ok(_) => {},
+        // Initialize with persistent storage support
+        // The actual persistence is handled by the frontend ZenFS system
+        serde_wasm_bindgen::to_value(&serde_json::json!({
+            "success": true,
+            "message": "terminal initialized with persistent storage"
+        })).unwrap()
+    }
+
+    /// load filesystem data from frontend (ZenFS)
+    #[wasm_bindgen]
+    pub fn load_filesystem_data(&mut self, files_json: &str) -> JsValue {
+        match serde_json::from_str::<Vec<serde_json::Value>>(files_json) {
+            Ok(files) => {
+                let mut loaded_count = 0;
+                let mut error_count = 0;
+
+                for file_data in files {
+                    if let (Some(path), Some(content_array)) = (
+                        file_data.get("path").and_then(|p| p.as_str()),
+                        file_data.get("content").and_then(|c| c.as_array())
+                    ) {
+                        // Convert JSON array to bytes
+                        let content: Result<Vec<u8>, _> = content_array
+                            .iter()
+                            .map(|v| v.as_u64().map(|n| n as u8))
+                            .collect::<Option<Vec<_>>>()
+                            .ok_or("Invalid content data");
+
+                        match content {
+                            Ok(content_bytes) => {
+                                // Create directories as needed
+                                if let Some(parent_dir) = std::path::Path::new(path).parent() {
+                                    let parent_str = parent_dir.to_string_lossy();
+                                    if parent_str != "/" && !parent_str.is_empty() {
+                                        let _ = self.create_directories_recursive(&parent_str);
+                                    }
+                                }
+
+                                // Create the file
+                                match self.ctx.vfs.create_file(path, content_bytes.clone()) {
+                                    Ok(_) => {
+                                        loaded_count += 1;
+                                    }
+                                    Err(_) => {
+                                        // File might already exist, try to update it
+                                        match self.ctx.vfs.write_file(path, content_bytes) {
+                                            Ok(_) => loaded_count += 1,
+                                            Err(_) => error_count += 1,
+                                        }
+                                    }
+                                }
+                            }
+                            Err(_) => error_count += 1,
+                        }
+                    } else {
+                        error_count += 1;
+                    }
+                }
+
+                serde_wasm_bindgen::to_value(&serde_json::json!({
+                    "success": true,
+                    "loaded": loaded_count,
+                    "errors": error_count,
+                    "message": format!("Loaded {} files from persistent storage", loaded_count)
+                })).unwrap()
+            }
             Err(e) => {
-                return serde_wasm_bindgen::to_value(&serde_json::json!({
+                serde_wasm_bindgen::to_value(&serde_json::json!({
                     "success": false,
-                    "error": format!("failed to init storage: {:?}", e)
-                })).unwrap();
-            }
-        }
-        
-        // auto-load saved vfs
-        match self.storage.load_vfs().await {
-            Ok(vfs) => {
-                self.ctx.vfs = vfs;
-                serde_wasm_bindgen::to_value(&serde_json::json!({
-                    "success": true,
-                    "message": "terminal initialized with saved filesystem"
-                })).unwrap()
-            },
-            Err(_) => {
-                // no saved data or error loading, use fresh vfs
-                serde_wasm_bindgen::to_value(&serde_json::json!({
-                    "success": true,
-                    "message": "terminal initialized with fresh filesystem"
+                    "error": format!("Failed to parse filesystem data: {}", e)
                 })).unwrap()
             }
         }
+    }
+
+    /// helper to create directories recursively
+    fn create_directories_recursive(&mut self, path: &str) -> Result<(), String> {
+        let components: Vec<&str> = path.trim_matches('/').split('/').filter(|c| !c.is_empty()).collect();
+        let mut current_path = String::new();
+
+        for component in components {
+            current_path = if current_path.is_empty() {
+                format!("/{}", component)
+            } else {
+                format!("{}/{}", current_path, component)
+            };
+
+            // Try to create directory, ignore if it already exists
+            let _ = self.ctx.vfs.create_dir(&current_path);
+        }
+
+        Ok(())
     }
 
     // main entry point - run a command and return result
@@ -123,28 +216,8 @@ impl Terminal {
         
         let response = match command::run_command(input, &mut self.ctx, &self.registry) {
             Ok(output) => {
-                // Check for special storage markers
+                // Check for special action markers
                 let cmd_response = match output.as_str() {
-                    "__STORAGE_MANUAL_SAVE__" => CommandResponse {
-                        success: true,
-                        output: "manually saving filesystem to storage...".to_string(),
-                        special_action: Some("storage_manual_save".to_string()),
-                    },
-                    "__STORAGE_MANUAL_RELOAD__" => CommandResponse {
-                        success: true,
-                        output: "reloading filesystem from storage (current state will be overwritten)...".to_string(),
-                        special_action: Some("storage_manual_reload".to_string()),
-                    },
-                    "__STORAGE_STATS__" => CommandResponse {
-                        success: true,
-                        output: "getting storage statistics...".to_string(),
-                        special_action: Some("storage_stats".to_string()),
-                    },
-                    "__STORAGE_CLEAR__" => CommandResponse {
-                        success: true,
-                        output: "clearing storage and resetting to empty filesystem...".to_string(),
-                        special_action: Some("storage_clear".to_string()),
-                    },
                     "__CLEAR_SCREEN__" => CommandResponse {
                         success: true,
                         output: "".to_string(),
@@ -157,18 +230,6 @@ impl Terminal {
                     },
                 };
 
-                // Check if this was a file-modifying command
-                let command_name = input.split_whitespace().next().unwrap_or("");
-                let is_modifying_command = matches!(command_name, 
-                    "edit" | "nano" | "touch" | "mkdir" | "rm" | "rmdir" | 
-                    "cp" | "mv" | "ln" | "chmod" | "chown" | "chgrp" | 
-                    "rawcreate" | "cpu" | "echo" | ">"
-                );
-
-                if is_modifying_command && cmd_response.success && cmd_response.special_action.is_none() {
-                    web_sys::console::log_1(&format!("filesystem modified by '{}' command - save needed", command_name).into());
-                }
-
                 cmd_response
             },
             Err(e) => CommandResponse {
@@ -179,68 +240,6 @@ impl Terminal {
         };
 
         serde_wasm_bindgen::to_value(&response).unwrap()
-    }
-
-    /// Trigger a background save of the VFS to storage
-    #[wasm_bindgen]
-    pub fn trigger_save(&self) {
-        web_sys::console::log_1(&"trigger_save called".into());
-        
-        // Serialize the VFS
-        let stored_vfs = crate::storage::StoredVFS {
-            root: self.storage.node_to_stored(&self.ctx.vfs.root, "/"),
-            version: 1,
-        };
-        
-        let json = match serde_json::to_string(&stored_vfs) {
-            Ok(j) => j,
-            Err(e) => {
-                web_sys::console::log_1(&format!("save serialization failed: {}", e).into());
-                return;
-            }
-        };
-        
-        web_sys::console::log_1(&format!("attempting to save {} bytes to indexeddb", json.len()).into());
-        
-        // Use the rexie approach directly with spawn_local
-        let save_future = async move {
-            match rexie::Rexie::builder("vfs")
-                .version(1)
-                .add_object_store(rexie::ObjectStore::new("vfs_store"))
-                .build()
-                .await 
-            {
-                Ok(db) => {
-                    match db.transaction(&["vfs_store"], rexie::TransactionMode::ReadWrite) {
-                        Ok(tx) => {
-                            match tx.store("vfs_store") {
-                                Ok(store) => {
-                                    match store.put(&JsValue::from_str(&json), Some(&JsValue::from_str("vfs"))).await {
-                                        Ok(_) => {
-                                            web_sys::console::log_1(&"background save completed successfully".into());
-                                        }
-                                        Err(e) => {
-                                            web_sys::console::log_1(&format!("background save put failed: {:?}", e).into());
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    web_sys::console::log_1(&format!("background save store access failed: {:?}", e).into());
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            web_sys::console::log_1(&format!("background save transaction failed: {:?}", e).into());
-                        }
-                    }
-                }
-                Err(e) => {
-                    web_sys::console::log_1(&format!("background save db open failed: {:?}", e).into());
-                }
-            }
-        };
-        
-        wasm_bindgen_futures::spawn_local(save_future);
     }
 
     // get current working directory
@@ -355,25 +354,13 @@ impl Terminal {
         
         match result {
             Ok(_) => {
-                // automatically save to storage after successful write
-                web_sys::console::log_1(&"attempting to auto-save to storage...".into());
-                match self.storage.save_vfs(&self.ctx.vfs).await {
-                    Ok(_) => {
-                        web_sys::console::log_1(&"auto-save completed successfully".into());
-                        serde_wasm_bindgen::to_value(&serde_json::json!({
-                            "success": true,
-                            "auto_saved": true,
-                        })).unwrap()
-                    }
-                    Err(e) => {
-                        web_sys::console::log_1(&format!("auto-save failed: {:?}", e).into());
-                        serde_wasm_bindgen::to_value(&serde_json::json!({
-                            "success": true,
-                            "auto_saved": false,
-                            "storage_error": format!("{:?}", e),
-                        })).unwrap()
-                    }
-                }
+                // Emit VFS event for frontend to save to IndexedDB
+                emit_vfs_event("vfs-write-file", &full_path, Some(content.as_bytes()));
+                
+                serde_wasm_bindgen::to_value(&serde_json::json!({
+                    "success": true,
+                    "auto_saved": true,
+                })).unwrap()
             }
             Err(e) => {
                 serde_wasm_bindgen::to_value(&serde_json::json!({
@@ -555,11 +542,15 @@ impl Terminal {
         
         match result {
             Ok(_) => {
+                // Emit VFS event for frontend to save to IndexedDB
+                emit_vfs_event("vfs-write-file", filename, Some(buffer.as_bytes()));
+                
                 self.ctx.set_var("_nano_modified", "false");
                 serde_wasm_bindgen::to_value(&serde_json::json!({
                     "success": true,
                     "message": format!("Wrote {} lines to {}", buffer.lines().count(), filename),
-                    "refresh": true
+                    "refresh": true,
+                    "auto_saved": true,
                 })).unwrap()
             }
             Err(e) => {
@@ -1203,77 +1194,6 @@ impl Terminal {
         
         highlights
     }
-
-    // === PERSISTENT STORAGE METHODS ===
-    
-    /// get storage statistics and usage info
-    #[wasm_bindgen]
-    pub async fn get_storage_info(&self) -> Result<JsValue, JsValue> {
-        self.storage.get_storage_stats().await
-    }
-    
-    /// manually save current vfs state (usually automatic)
-    #[wasm_bindgen]
-    pub async fn manual_save(&self) -> JsValue {
-        match self.storage.save_vfs(&self.ctx.vfs).await {
-            Ok(_) => {
-                serde_wasm_bindgen::to_value(&serde_json::json!({
-                    "success": true,
-                    "message": "vfs manually saved to storage"
-                })).unwrap()
-            }
-            Err(e) => {
-                serde_wasm_bindgen::to_value(&serde_json::json!({
-                    "success": false,
-                    "error": format!("failed to save vfs: {:?}", e)
-                })).unwrap()
-            }
-        }
-    }
-    
-    /// manually reload vfs from storage (destructive!)
-    #[wasm_bindgen]
-    pub async fn manual_reload(&mut self) -> JsValue {
-        match self.storage.load_vfs().await {
-            Ok(vfs) => {
-                self.ctx.vfs = vfs;
-                serde_wasm_bindgen::to_value(&serde_json::json!({
-                    "success": true,
-                    "message": "vfs reloaded from storage (current state overwritten)"
-                })).unwrap()
-            }
-            Err(e) => {
-                serde_wasm_bindgen::to_value(&serde_json::json!({
-                    "success": false,
-                    "error": format!("failed to reload vfs: {:?}", e)
-                })).unwrap()
-            }
-        }
-    }
-    
-    /// clear all persistent storage (reset filesystem)
-    #[wasm_bindgen]
-    pub async fn clear_storage(&mut self) -> JsValue {
-        // reset to a fresh vfs
-        self.ctx.vfs = crate::vfs::VirtualFileSystem::new();
-        
-        // delete from storage and save empty vfs
-        let _ = self.storage.delete_node("/").await;
-        match self.storage.save_vfs(&self.ctx.vfs).await {
-            Ok(_) => {
-                serde_wasm_bindgen::to_value(&serde_json::json!({
-                    "success": true,
-                    "message": "storage cleared and reset to empty filesystem"
-                })).unwrap()
-            }
-            Err(e) => {
-                serde_wasm_bindgen::to_value(&serde_json::json!({
-                    "success": false,
-                    "error": format!("failed to clear storage: {:?}", e)
-                })).unwrap()
-            }
-        }
-    }
 }
 
 // create assembly program templates
@@ -1354,4 +1274,4 @@ pub fn get_assembly_template(template_type: &str) -> String {
         }
         _ => get_assembly_template("basic") // fallback to basic template
     }
-} 
+}

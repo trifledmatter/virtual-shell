@@ -3,6 +3,7 @@
 import Image from "next/image";
 import React, { useRef, useState, useEffect } from "react";
 import Logo from "./icon-white.png";
+import { VfsEventProvider, useVfs } from "./VfsEventProvider";
 
 // custom monospace font stack - fallback to system fonts if needed
 const FONT = "Monaco, Menlo, 'Ubuntu Mono', Consolas, source-code-pro, monospace";
@@ -49,10 +50,20 @@ const Home = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const editContentRef = useRef<HTMLDivElement>(null);
 
+  // VFS context for reading from ZenFS
+  const vfs = useVfs();
+
   // load wasm module on component mount
   useEffect(() => {
     const init = async () => {
       try {
+        // Wait for VFS to be ready
+        if (!vfs.isReady) {
+          console.log('Waiting for ZenFS to be ready...');
+          return;
+        }
+
+        // @ts-ignore
         const wasmModule = await import("./source/pkg/source");
         const { Terminal, default: init } = wasmModule;
         // Type assertion for the new async callback function
@@ -61,16 +72,42 @@ const Home = () => {
         await init();
         const term = new Terminal();
         
-        // initialize storage and auto-load saved filesystem
+        // initialize storage
         try {
           const storageResult = await term.init_with_storage();
           console.log('Storage initialization:', storageResult);
           
-          // show a subtle indication that data was loaded/created
-          if (storageResult.success) {
+          // Load existing files from ZenFS into Rust VFS
+          try {
+            console.log('Loading existing files from ZenFS...');
+            const allFiles = await vfs.getAllFiles();
+            console.log(`Found ${allFiles.length} files in ZenFS:`, allFiles.map(f => f.path));
+            
+            if (allFiles.length > 0) {
+              // Convert files to the format expected by Rust
+              const filesData = allFiles.map(file => ({
+                path: file.path,
+                content: Array.from(file.content)
+              }));
+              
+              const loadResult = (term as any).load_filesystem_data(JSON.stringify(filesData));
+              console.log('Filesystem load result:', loadResult);
+              
+              setLines([{ 
+                type: 'output', 
+                content: `🗄️ ${loadResult.message || `Loaded ${allFiles.length} files from persistent storage`}`
+              }]);
+            } else {
+              setLines([{ 
+                type: 'output', 
+                content: `🗄️ ${storageResult.message || 'storage initialized - no existing files found'}`
+              }]);
+            }
+          } catch (loadError) {
+            console.warn('Failed to load existing files:', loadError);
             setLines([{ 
               type: 'output', 
-              content: `🗄️ ${storageResult.message || 'storage initialized'}`
+              content: '⚠️ storage ready but failed to load existing files'
             }]);
           }
         } catch (error) {
@@ -112,7 +149,7 @@ const Home = () => {
       }
     };
     init();
-  }, []);
+  }, [vfs.isReady]);
 
   // auto-scroll terminal to bottom whenever content changes
   useEffect(() => {
@@ -530,4 +567,11 @@ const Home = () => {
   );
 };
 
-export default Home;
+// Wrap Home in VfsEventProvider
+const Page = () => (
+  <VfsEventProvider>
+    <Home />
+  </VfsEventProvider>
+);
+
+export default Page;
