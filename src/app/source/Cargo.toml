@@ -18,6 +18,8 @@ regex = "1.10"
 uuid = { version = "1.8", features = ["v4", "js"] }
 gloo-timers = { version = "0.3", features = ["futures"] }
 futures = "0.3"
+flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] }
+base64 = "0.22"
 web-sys = { version = "0.3", features = [
     "console",
     "Request",
@@ -25,7 +27,22 @@ web-sys = { version = "0.3", features = [
     "RequestMode",
     "Response",
     "Headers",
-    "Window"
+    "Window",
+    "IdbFactory",
+    "IdbDatabase",
+    "IdbTransaction",
+    "IdbObjectStore",
+    "IdbRequest",
+    "IdbOpenDbRequest",
+    "IdbCursor",
+    "IdbCursorWithValue",
+    "IdbKeyRange",
+    "DomException",
+    "IdbVersionChangeEvent",
+    "IdbTransactionMode",
+    "Event",
+    "EventTarget",
+    "Storage",
 ] }
 
 [dev-dependencies]

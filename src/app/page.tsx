@@ -61,6 +61,26 @@ const Home = () => {
         await init();
         const term = new Terminal();
         
+        // initialize storage and auto-load saved filesystem
+        try {
+          const storageResult = await term.init_with_storage();
+          console.log('Storage initialization:', storageResult);
+          
+          // show a subtle indication that data was loaded/created
+          if (storageResult.success) {
+            setLines([{ 
+              type: 'output', 
+              content: `🗄️ ${storageResult.message || 'storage initialized'}`
+            }]);
+          }
+        } catch (error) {
+          console.warn('Storage initialization failed, continuing with in-memory only:', error);
+          setLines([{ 
+            type: 'output', 
+            content: '⚠️ storage unavailable, using in-memory filesystem only'
+          }]);
+        }
+        
         // Set up async result callback to display results in terminal
         const handleAsyncResult = (result: string) => {
           // Split multi-line results and add each line

@@ -33,3 +33,4 @@ pub mod help;
 pub mod clear;
 pub mod ping;
 pub mod curl;
+pub mod storage;

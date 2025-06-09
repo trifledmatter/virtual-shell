@@ -4,12 +4,14 @@ pub mod vfs;
 pub mod command;
 pub mod context;
 pub mod commands;
+pub mod storage;
 
 use wasm_bindgen::prelude::*;
 use context::TerminalContext;
 use command::{CommandRegistry};
 use serde::{Serialize, Deserialize};
 use std::io::{Read, Write};
+use storage::PersistentStorage;
 
 // better errors in browser console
 #[cfg(feature = "console_error_panic_hook")]
@@ -44,6 +46,7 @@ pub fn send_async_result(result: &str) {
 pub struct Terminal {
     ctx: TerminalContext,
     registry: CommandRegistry,
+    storage: PersistentStorage,
 }
 
 // response wrapper for js comms
@@ -52,6 +55,8 @@ pub struct Terminal {
 pub struct CommandResponse {
     pub success: bool,
     pub output: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub special_action: Option<String>,
 }
 
 #[wasm_bindgen]
@@ -62,6 +67,9 @@ impl Terminal {
         let registry = CommandRegistry::default_commands();
         let mut ctx = TerminalContext::new();
         
+        // enable auto-save by default
+        ctx.set_var("_auto_save", "true");
+        
         // need separate registry for ctx since can't clone it
         // rust ownership nonsense, whatever
         let registry_for_ctx = CommandRegistry::default_commands();
@@ -70,6 +78,40 @@ impl Terminal {
         Terminal {
             ctx,
             registry,
+            storage: PersistentStorage::new(),
+        }
+    }
+
+    /// initialize terminal with storage - call this immediately after creating terminal
+    #[wasm_bindgen]
+    pub async fn init_with_storage(&mut self) -> JsValue {
+        // init storage first
+        match self.storage.init().await {
+            Ok(_) => {},
+            Err(e) => {
+                return serde_wasm_bindgen::to_value(&serde_json::json!({
+                    "success": false,
+                    "error": format!("failed to init storage: {:?}", e)
+                })).unwrap();
+            }
+        }
+        
+        // auto-load saved vfs
+        match self.storage.load_vfs().await {
+            Ok(vfs) => {
+                self.ctx.vfs = vfs;
+                serde_wasm_bindgen::to_value(&serde_json::json!({
+                    "success": true,
+                    "message": "terminal initialized with saved filesystem"
+                })).unwrap()
+            },
+            Err(_) => {
+                // no saved data or error loading, use fresh vfs
+                serde_wasm_bindgen::to_value(&serde_json::json!({
+                    "success": true,
+                    "message": "terminal initialized with fresh filesystem"
+                })).unwrap()
+            }
         }
     }
 
@@ -79,13 +121,45 @@ impl Terminal {
         let input = input.trim();
         
         let response = match command::run_command(input, &mut self.ctx, &self.registry) {
-            Ok(output) => CommandResponse {
-                success: true,
-                output,
+            Ok(output) => {
+                // Check for special storage markers
+                match output.as_str() {
+                    "__STORAGE_MANUAL_SAVE__" => CommandResponse {
+                        success: true,
+                        output: "manually saving filesystem to storage...".to_string(),
+                        special_action: Some("storage_manual_save".to_string()),
+                    },
+                    "__STORAGE_MANUAL_RELOAD__" => CommandResponse {
+                        success: true,
+                        output: "reloading filesystem from storage (current state will be overwritten)...".to_string(),
+                        special_action: Some("storage_manual_reload".to_string()),
+                    },
+                    "__STORAGE_STATS__" => CommandResponse {
+                        success: true,
+                        output: "getting storage statistics...".to_string(),
+                        special_action: Some("storage_stats".to_string()),
+                    },
+                    "__STORAGE_CLEAR__" => CommandResponse {
+                        success: true,
+                        output: "clearing storage and resetting to empty filesystem...".to_string(),
+                        special_action: Some("storage_clear".to_string()),
+                    },
+                    "__CLEAR_SCREEN__" => CommandResponse {
+                        success: true,
+                        output: "".to_string(),
+                        special_action: Some("clear_screen".to_string()),
+                    },
+                    _ => CommandResponse {
+                        success: true,
+                        output,
+                        special_action: None,
+                    },
+                }
             },
             Err(e) => CommandResponse {
                 success: false,
                 output: format!("Error: {}", e),
+                special_action: None,
             },
         };
 
@@ -185,7 +259,7 @@ impl Terminal {
 
     // write string to file, create if doesn't exist
     #[wasm_bindgen]
-    pub fn write_file(&mut self, path: &str, content: &str) -> JsValue {
+    pub async fn write_file(&mut self, path: &str, content: &str) -> JsValue {
         // handle relative/absolute paths
         let full_path = if path.starts_with('/') {
             path.to_string()
@@ -204,8 +278,12 @@ impl Terminal {
         
         match result {
             Ok(_) => {
+                // automatically save to storage after successful write
+                let _ = self.storage.save_vfs(&self.ctx.vfs).await;
+                
                 serde_wasm_bindgen::to_value(&serde_json::json!({
                     "success": true,
+                    "auto_saved": true,
                 })).unwrap()
             }
             Err(e) => {
@@ -1035,6 +1113,77 @@ impl Terminal {
         }
         
         highlights
+    }
+
+    // === PERSISTENT STORAGE METHODS ===
+    
+    /// get storage statistics and usage info
+    #[wasm_bindgen]
+    pub async fn get_storage_info(&self) -> Result<JsValue, JsValue> {
+        self.storage.get_storage_stats().await
+    }
+    
+    /// manually save current vfs state (usually automatic)
+    #[wasm_bindgen]
+    pub async fn manual_save(&self) -> JsValue {
+        match self.storage.save_vfs(&self.ctx.vfs).await {
+            Ok(_) => {
+                serde_wasm_bindgen::to_value(&serde_json::json!({
+                    "success": true,
+                    "message": "vfs manually saved to storage"
+                })).unwrap()
+            }
+            Err(e) => {
+                serde_wasm_bindgen::to_value(&serde_json::json!({
+                    "success": false,
+                    "error": format!("failed to save vfs: {:?}", e)
+                })).unwrap()
+            }
+        }
+    }
+    
+    /// manually reload vfs from storage (destructive!)
+    #[wasm_bindgen]
+    pub async fn manual_reload(&mut self) -> JsValue {
+        match self.storage.load_vfs().await {
+            Ok(vfs) => {
+                self.ctx.vfs = vfs;
+                serde_wasm_bindgen::to_value(&serde_json::json!({
+                    "success": true,
+                    "message": "vfs reloaded from storage (current state overwritten)"
+                })).unwrap()
+            }
+            Err(e) => {
+                serde_wasm_bindgen::to_value(&serde_json::json!({
+                    "success": false,
+                    "error": format!("failed to reload vfs: {:?}", e)
+                })).unwrap()
+            }
+        }
+    }
+    
+    /// clear all persistent storage (reset filesystem)
+    #[wasm_bindgen]
+    pub async fn clear_storage(&mut self) -> JsValue {
+        // reset to a fresh vfs
+        self.ctx.vfs = crate::vfs::VirtualFileSystem::new();
+        
+        // delete from storage and save empty vfs
+        let _ = self.storage.delete_node("/").await;
+        match self.storage.save_vfs(&self.ctx.vfs).await {
+            Ok(_) => {
+                serde_wasm_bindgen::to_value(&serde_json::json!({
+                    "success": true,
+                    "message": "storage cleared and reset to empty filesystem"
+                })).unwrap()
+            }
+            Err(e) => {
+                serde_wasm_bindgen::to_value(&serde_json::json!({
+                    "success": false,
+                    "error": format!("failed to clear storage: {:?}", e)
+                })).unwrap()
+            }
+        }
     }
 }
 

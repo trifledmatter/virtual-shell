@@ -68,7 +68,7 @@ impl Command for HelpCommand {
                     "env" | "export" | "set" | "alias" | "unalias" | "source" | "functions" => {
                         env_ops.push(cmd);
                     }
-                    "help" | "history" | "clear" | "rawcreate" => {
+                    "help" | "history" | "clear" | "rawcreate" | "storage" => {
                         other_ops.push(cmd);
                     }
                     _ => {
@@ -163,6 +163,7 @@ fn get_command_help(cmd_name: &str) -> String {
         "cpu" => "cpu SUBCOMMAND [ARGS]...\nCPU emulator commands\n\nSubcommands:\n  run FILE      execute assembly file\n  debug FILE    debug assembly file step by step\n  template TYPE create assembly template\n  --help        display this help and exit".to_string(),
         "edit" => "edit FILE\nOpen FILE in nano-style editor\n\nOptions:\n  --help    display this help and exit".to_string(),
         "clear" => "clear\nClear the terminal screen\n\nOptions:\n  --help    display this help and exit".to_string(),
+        "storage" => "storage COMMAND [OPTIONS]\nManage persistent file system storage with compression\n\nCommands:\n  save         save current VFS to storage\n  load         load VFS from storage\n  stats        show storage statistics\n  clear        clear all storage\n  autosave     manage auto-save settings\n\nOptions:\n  --help       display this help and exit".to_string(),
         "rawcreate" => "rawcreate <PATH> <HEX BYTES...>\ncreate a file with arbitrary bytes (hex)\n\nOptions:\n  --help    display this help and exit".to_string(),
         "curl" => "curl [OPTIONS] <url>\nTransfer a URL using HTTP(S)\n\nOptions:\n  -o FILE         write output to FILE\n  -I, --head      fetch headers only (HEAD request)\n  -H HEADER       add custom header\n  -A AGENT        set user agent string\n  -s              silent mode (no output)\n  -i              include response headers in output\n  --help          display this help and exit".to_string(),
         "ping" => "ping [OPTIONS] <url>\nSend HTTP HEAD requests to a URL and report timing\n\nOptions:\n  -c COUNT        number of requests to send (default 4)\n  -i SECONDS      interval between requests (default 1)\n  -w SECONDS      deadline in seconds\n  -q              quiet mode (no output)\n  --help          display this help and exit".to_string(),
