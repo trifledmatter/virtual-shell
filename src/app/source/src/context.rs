@@ -1,4 +1,5 @@
 use crate::vfs::VirtualFileSystem;
+use crate::vfs_events::emit_vfs_event;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -100,5 +101,177 @@ impl TerminalContext {
     
     pub fn set_command_registry(&mut self, registry: Arc<crate::command::CommandRegistry>) {
         self.registry = Some(registry);
+    }
+    
+    /// Create a file with VFS event emission
+    pub fn create_file_with_events(&mut self, path: &str, content: &[u8]) -> Result<(), String> {
+        web_sys::console::log_3(
+            &"[CONTEXT VFS] 📝 create_file_with_events called for:".into(),
+            &path.into(),
+            &format!("({} bytes)", content.len()).into(),
+        );
+        
+        // Create the file
+        match self.vfs.create_file(path, content.to_vec()) {
+            Ok(_) => {
+                web_sys::console::log_2(
+                    &"[CONTEXT VFS] ✅ File created, emitting VFS event:".into(),
+                    &path.into(),
+                );
+                // Emit VFS event for frontend to save to IndexedDB
+                emit_vfs_event("vfs-create-file", path, Some(content));
+                Ok(())
+            }
+            Err(e) => {
+                web_sys::console::error_3(
+                    &"[CONTEXT VFS] ❌ Failed to create file:".into(),
+                    &path.into(),
+                    &e.clone().into(),
+                );
+                Err(e)
+            }
+        }
+    }
+    
+    /// Write to a file with VFS event emission
+    pub fn write_file_with_events(&mut self, path: &str, content: &[u8]) -> Result<(), String> {
+        web_sys::console::log_3(
+            &"[CONTEXT VFS] 📝 write_file_with_events called for:".into(),
+            &path.into(),
+            &format!("({} bytes)", content.len()).into(),
+        );
+
+        // Try write first, then create if needed
+        match self.vfs.write_file(path, content.to_vec()) {
+            Ok(_) => {
+                web_sys::console::log_2(
+                    &"[CONTEXT VFS] ✅ File written, emitting VFS event:".into(),
+                    &path.into(),
+                );
+                // Emit VFS event for frontend to save to IndexedDB
+                emit_vfs_event("vfs-write-file", path, Some(content));
+                Ok(())
+            }
+            Err(_) => {
+                web_sys::console::log_1(&"[CONTEXT VFS] 📝 File doesn't exist, creating with events".into());
+                // File doesn't exist, create it with events
+                self.create_file_with_events(path, content)
+            }
+        }
+    }
+    
+    /// Create a symlink with VFS event emission
+    pub fn create_symlink_with_events(&mut self, link_path: &str, target_path: &str) -> Result<(), String> {
+        web_sys::console::log_3(
+            &"[CONTEXT VFS] 🔗 create_symlink_with_events called for:".into(),
+            &link_path.into(),
+            &format!("-> {}", target_path).into(),
+        );
+        
+        match self.vfs.create_symlink(link_path, target_path) {
+            Ok(_) => {
+                web_sys::console::log_2(
+                    &"[CONTEXT VFS] ✅ Symlink created, emitting VFS event:".into(),
+                    &link_path.into(),
+                );
+                // Emit VFS event for frontend (no content for symlinks, just the path)
+                emit_vfs_event("vfs-create-symlink", link_path, None);
+                Ok(())
+            }
+            Err(e) => {
+                web_sys::console::error_3(
+                    &"[CONTEXT VFS] ❌ Failed to create symlink:".into(),
+                    &link_path.into(),
+                    &e.clone().into(),
+                );
+                Err(e)
+            }
+        }
+    }
+    
+    /// Create a directory with VFS event emission
+    pub fn create_dir_with_events(&mut self, path: &str) -> Result<(), String> {
+        web_sys::console::log_2(
+            &"[CONTEXT VFS] 📁 create_dir_with_events called for:".into(),
+            &path.into(),
+        );
+        
+        match self.vfs.create_dir(path) {
+            Ok(_) => {
+                web_sys::console::log_2(
+                    &"[CONTEXT VFS] ✅ Directory created, emitting VFS event:".into(),
+                    &path.into(),
+                );
+                // Emit VFS event for frontend
+                emit_vfs_event("vfs-create-dir", path, None);
+                Ok(())
+            }
+            Err(e) => {
+                web_sys::console::error_3(
+                    &"[CONTEXT VFS] ❌ Failed to create directory:".into(),
+                    &path.into(),
+                    &e.clone().into(),
+                );
+                Err(e)
+            }
+        }
+    }
+    
+    /// Create a zip archive with VFS event emission
+    pub fn create_zip_with_events(&mut self, path: &str, content: &[u8]) -> Result<(), String> {
+        web_sys::console::log_3(
+            &"[CONTEXT VFS] 📦 create_zip_with_events called for:".into(),
+            &path.into(),
+            &format!("({} bytes)", content.len()).into(),
+        );
+        
+        // Create the zip file
+        match self.vfs.create_file(path, content.to_vec()) {
+            Ok(_) => {
+                web_sys::console::log_2(
+                    &"[CONTEXT VFS] ✅ Zip archive created, emitting VFS event:".into(),
+                    &path.into(),
+                );
+                // Emit specific VFS event for zip archives
+                emit_vfs_event("vfs-create-zip", path, Some(content));
+                Ok(())
+            }
+            Err(e) => {
+                web_sys::console::error_3(
+                    &"[CONTEXT VFS] ❌ Failed to create zip archive:".into(),
+                    &path.into(),
+                    &e.clone().into(),
+                );
+                Err(e)
+            }
+        }
+    }
+    
+    /// Delete a file or directory with VFS event emission
+    pub fn delete_with_events(&mut self, path: &str) -> Result<(), String> {
+        web_sys::console::log_2(
+            &"[CONTEXT VFS] 🗑️ delete_with_events called for:".into(),
+            &path.into(),
+        );
+        
+        match self.vfs.delete(path) {
+            Ok(_) => {
+                web_sys::console::log_2(
+                    &"[CONTEXT VFS] ✅ File/directory deleted, emitting VFS event:".into(),
+                    &path.into(),
+                );
+                // Emit VFS event for frontend
+                emit_vfs_event("vfs-delete", path, None);
+                Ok(())
+            }
+            Err(e) => {
+                web_sys::console::error_3(
+                    &"[CONTEXT VFS] ❌ Failed to delete:".into(),
+                    &path.into(),
+                    &e.clone().into(),
+                );
+                Err(e)
+            }
+        }
     }
 }

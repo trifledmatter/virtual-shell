@@ -17,6 +17,18 @@ export class Terminal {
    * load filesystem data from frontend (ZenFS)
    */
   load_filesystem_data(files_json: string): any;
+  /**
+   * helper to create files with automatic VFS event emission
+   */
+  create_file_with_events(path: string, content: Uint8Array): void;
+  /**
+   * helper to write files with automatic VFS event emission  
+   */
+  write_file_with_events(path: string, content: Uint8Array): void;
+  /**
+   * test function to manually emit a VFS event - for debugging
+   */
+  test_emit_event(): any;
   execute_command(input: string): any;
   get_current_directory(): string;
   list_files(path?: string | null): any;
@@ -41,6 +53,9 @@ export interface InitOutput {
   readonly terminal_init_terminal: (a: number) => any;
   readonly terminal_init_with_storage: (a: number) => any;
   readonly terminal_load_filesystem_data: (a: number, b: number, c: number) => any;
+  readonly terminal_create_file_with_events: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+  readonly terminal_write_file_with_events: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+  readonly terminal_test_emit_event: (a: number) => any;
   readonly terminal_execute_command: (a: number, b: number, c: number) => any;
   readonly terminal_get_current_directory: (a: number) => [number, number];
   readonly terminal_list_files: (a: number, b: number, c: number) => any;
@@ -60,10 +75,11 @@ export interface InitOutput {
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
   readonly __wbindgen_export_5: WebAssembly.Table;
+  readonly __externref_table_dealloc: (a: number) => void;
   readonly __wbindgen_free: (a: number, b: number, c: number) => void;
   readonly _dyn_core__ops__function__FnMut_____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__hb7ade31a031a667e: (a: number, b: number) => void;
-  readonly closure150_externref_shim: (a: number, b: number, c: any) => void;
-  readonly closure818_externref_shim: (a: number, b: number, c: any, d: any) => void;
+  readonly closure160_externref_shim: (a: number, b: number, c: any) => void;
+  readonly closure827_externref_shim: (a: number, b: number, c: any, d: any) => void;
   readonly __wbindgen_start: () => void;
 }
 

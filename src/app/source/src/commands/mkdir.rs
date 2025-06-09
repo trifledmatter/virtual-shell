@@ -76,9 +76,9 @@ impl Command for MkdirCommand {
         let mut results = Vec::new();
         for path in paths {
             let res = if parents {
-                mkdir_parents(&mut ctx.vfs, path, verbose)
+                mkdir_parents(ctx, path, verbose)
             } else {
-                mkdir_single(&mut ctx.vfs, path, mode, verbose)
+                mkdir_single(ctx, path, mode, verbose)
             };
             match res {
                 Ok(msg) => if !msg.is_empty() { results.push(msg); },
@@ -89,30 +89,14 @@ impl Command for MkdirCommand {
     }
 }
 
-fn mkdir_single(vfs: &mut crate::vfs::VirtualFileSystem, path: &str, mode: Option<Permissions>, verbose: bool) -> Result<String, String> {
-    // split path into parent and dir name
-    let (parent_path, dir_name) = crate::vfs::VirtualFileSystem::split_path(path)?;
-    
-    // find parent dir, bail if not found or not a dir
-    let parent = vfs.resolve_path_mut(parent_path)
-        .and_then(|node| match node {
-            VfsNode::Directory { children, .. } => Some(children),
-            _ => None, // not a dir, can't mkdir inside it
-        })
-        .ok_or("Parent directory does not exist")?;
-    
-    // can't create if already exists
-    if parent.contains_key(dir_name) {
+fn mkdir_single(ctx: &mut TerminalContext, path: &str, mode: Option<Permissions>, verbose: bool) -> Result<String, String> {
+    // check if already exists
+    if ctx.vfs.resolve_path(path).is_some() {
         return Err("File exists".to_string());
     }
     
-    // create dir node and add to parent
-    parent.insert(dir_name.to_string(), VfsNode::Directory {
-        name: dir_name.to_string(),
-        children: std::collections::HashMap::new(), // empty dir
-        permissions: mode.unwrap_or_else(Permissions::default_dir), // use provided mode or default
-        mtime: Local::now(), // set creation time
-    });
+    // create directory with events
+    ctx.create_dir_with_events(path)?;
     
     // return success msg if verbose, otherwise empty string
     if verbose {
@@ -122,42 +106,35 @@ fn mkdir_single(vfs: &mut crate::vfs::VirtualFileSystem, path: &str, mode: Optio
     }
 }
 
-fn mkdir_parents(vfs: &mut crate::vfs::VirtualFileSystem, path: &str, verbose: bool) -> Result<String, String> {
+fn mkdir_parents(ctx: &mut TerminalContext, path: &str, verbose: bool) -> Result<String, String> {
     // split path into parts, skip empty stuff
-    let mut components: Vec<&str> = path.trim_matches('/').split('/').filter(|c| !c.is_empty()).collect();
+    let components: Vec<&str> = path.trim_matches('/').split('/').filter(|c| !c.is_empty()).collect();
     if components.is_empty() {
         return Err("Invalid path".to_string());
     }
     
-    // start at fs root
-    let mut node = &mut vfs.root;
     let mut created = Vec::new();
+    let mut current_path = String::new();
     
-    // go through each path component
+    // go through each path component, building up the path
     for comp in &components {
-        match node {
-            VfsNode::Directory { children, .. } => {
-                // create dir if doesn't exist yet
-                if !children.contains_key(*comp) {
-                    children.insert((*comp).to_string(), VfsNode::Directory {
-                        name: (*comp).to_string(),
-                        children: std::collections::HashMap::new(),
-                        permissions: Permissions::default_dir(), // just use defaults
-                        mtime: Local::now(),
-                    });
-                    created.push(comp.to_string());
-                }
-                // move into the dir for next iteration
-                node = children.get_mut(*comp).unwrap(); // safe unwrap, we just inserted it
-            }
-            // bail if hit a file in the middle of the path
-            _ => return Err("A component in the path is not a directory".to_string()),
+        current_path = if current_path.is_empty() {
+            format!("/{}", comp)
+        } else {
+            format!("{}/{}", current_path, comp)
+        };
+        
+        // check if this path component already exists
+        if ctx.vfs.resolve_path(&current_path).is_none() {
+            // doesn't exist, create it with events
+            ctx.create_dir_with_events(&current_path)?;
+            created.push(current_path.clone());
         }
     }
     
     // only print stuff in verbose mode
     if verbose {
-        Ok(created.into_iter().map(|c| format!("mkdir: created directory '{}'.", c)).collect::<Vec<_>>().join("\n"))
+        Ok(created.into_iter().map(|path| format!("mkdir: created directory '{}'.", path)).collect::<Vec<_>>().join("\n"))
     } else {
         Ok(String::new())
     }

@@ -181,9 +181,8 @@ fn save_file(ctx: &mut TerminalContext, filename: &str) -> CommandResult {
         .map(|s| s.clone())
         .unwrap_or_else(|| String::new());
     
-    // try to write, create if doesn't exist
-    let result = ctx.vfs.write_file(filename, buffer.as_bytes().to_vec())
-        .or_else(|_| ctx.vfs.create_file(filename, buffer.as_bytes().to_vec()));
+          // write or create file with events
+      let result = ctx.write_file_with_events(filename, buffer.as_bytes());
     
     match result {
         Ok(_) => {

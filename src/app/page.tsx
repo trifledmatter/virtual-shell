@@ -5,22 +5,22 @@ import React, { useRef, useState, useEffect } from "react";
 import Logo from "./icon-white.png";
 import { VfsEventProvider, useVfs } from "./VfsEventProvider";
 
-// custom monospace font stack - fallback to system fonts if needed
+// monospace font stack because designers don't understand developers
 const FONT = "Monaco, Menlo, 'Ubuntu Mono', Consolas, source-code-pro, monospace";
 
-// terminal output line types
+// what kind of line this is in the terminal
 interface TerminalLine {
   type: 'input' | 'output' | 'error';
   content: string;
 }
 
-// representation of a single line in editor
+// a line in the editor because we need to track line numbers
 interface EditLine {
   number: number;
   content: string;
 }
 
-// editor state when in edit mode
+// editor state when someone actually wants to edit files
 interface EditEditor {
   type: 'edit_editor';
   filename: string;
@@ -30,11 +30,11 @@ interface EditEditor {
   help: string;
 }
 
-// wasm terminal type - using any to avoid typing headaches
+// wasm terminal type - using any because typescript is annoying
 type Terminal = any;
 
 const Home = () => {
-  // state management
+  // all the state we need to track
   const [lines, setLines] = useState<TerminalLine[]>([]);
   const [current, setCurrent] = useState("");
   const [terminal, setTerminal] = useState<Terminal | null>(null);
@@ -45,89 +45,80 @@ const Home = () => {
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   
-  // refs for dom manipulation
+  // refs for when we need to mess with the dom directly
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const editContentRef = useRef<HTMLDivElement>(null);
 
-  // VFS context for reading from ZenFS
+  // vfs context because we need to read files somehow
   const vfs = useVfs();
 
-  // load wasm module on component mount
+  // load the wasm module when the component mounts
   useEffect(() => {
     const init = async () => {
       try {
-        // Wait for VFS to be ready
+        // wait for vfs to get its act together
         if (!vfs.isReady) {
-          console.log('Waiting for ZenFS to be ready...');
+          console.log('waiting for zenfs to be ready...');
           return;
         }
 
         // @ts-ignore
         const wasmModule = await import("./source/pkg/source");
         const { Terminal, default: init } = wasmModule;
-        // Type assertion for the new async callback function
+        // typescript doesn't know about this function
         const set_async_result_callback = (wasmModule as any).set_async_result_callback;
         
         await init();
         const term = new Terminal();
         
-        // initialize storage
+        // try to initialize storage
         try {
           const storageResult = await term.init_with_storage();
-          console.log('Storage initialization:', storageResult);
+          console.log('storage initialization:', storageResult);
           
-          // Load existing files from ZenFS into Rust VFS
+          // load files from zenfs into rust vfs
           try {
-            console.log('Loading existing files from ZenFS...');
+            console.log('loading existing files from zenfs...');
             const allFiles = await vfs.getAllFiles();
-            console.log(`Found ${allFiles.length} files in ZenFS:`, allFiles.map(f => f.path));
+            console.log(`found ${allFiles.length} files in zenfs:`, allFiles.map(f => f.path));
             
             if (allFiles.length > 0) {
-              // Convert files to the format expected by Rust
+              // convert to format rust expects
               const filesData = allFiles.map(file => ({
                 path: file.path,
                 content: Array.from(file.content)
               }));
               
               const loadResult = (term as any).load_filesystem_data(JSON.stringify(filesData));
-              console.log('Filesystem load result:', loadResult);
-              
-              setLines([{ 
-                type: 'output', 
-                content: `🗄️ ${loadResult.message || `Loaded ${allFiles.length} files from persistent storage`}`
-              }]);
+              console.log('filesystem load result:', loadResult);
             } else {
-              setLines([{ 
-                type: 'output', 
-                content: `🗄️ ${storageResult.message || 'storage initialized - no existing files found'}`
-              }]);
             }
           } catch (loadError) {
-            console.warn('Failed to load existing files:', loadError);
+            console.warn('failed to load existing files:', loadError);
             setLines([{ 
               type: 'output', 
-              content: '⚠️ storage ready but failed to load existing files'
+              content: 'storage ready but failed to load existing files'
             }]);
           }
         } catch (error) {
-          console.warn('Storage initialization failed, continuing with in-memory only:', error);
+          console.warn('storage initialization failed, continuing with in-memory only:', error);
           setLines([{ 
             type: 'output', 
-            content: '⚠️ storage unavailable, using in-memory filesystem only'
+            content: 'storage unavailable, using in-memory filesystem only'
           }]);
         }
         
-        // Set up async result callback to display results in terminal
+        // set up callback to show async results in terminal
         const handleAsyncResult = (result: string) => {
-          // Split multi-line results and add each line
+          // split multi-line results and add each line
           const outputLines = result.split('\n');
           setLines(prev => [
             ...prev,
             ...outputLines.map((line: string) => ({ type: 'output' as const, content: line }))
           ]);
           
-          // Auto-scroll to bottom
+          // scroll to bottom because nobody wants to scroll manually
           setTimeout(() => {
             if (containerRef.current) {
               containerRef.current.scrollTop = containerRef.current.scrollHeight;
@@ -135,7 +126,7 @@ const Home = () => {
           }, 0);
         };
         
-        // Register the callback with WASM if available
+        // register the callback with wasm if it exists
         if (set_async_result_callback) {
           set_async_result_callback(handleAsyncResult);
         }
@@ -143,7 +134,7 @@ const Home = () => {
         setTerminal(term);
         setIsLoading(false);
       } catch (error) {
-        console.error('Failed to initialize WASM module:', error);
+        console.error('failed to initialize wasm module:', error);
         setLines([{ type: 'error', content: `Error: ${error}` }]);
         setIsLoading(false);
       }
@@ -151,21 +142,21 @@ const Home = () => {
     init();
   }, [vfs.isReady]);
 
-  // auto-scroll terminal to bottom whenever content changes
+  // auto-scroll terminal to bottom because users expect it
   useEffect(() => {
     if (containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
   }, [lines, editEditor]);
 
-  // auto-focus input when terminal is ready
+  // focus input when terminal is ready
   useEffect(() => {
     if (!isLoading && inputRef.current) {
       inputRef.current.focus();
     }
   }, [isLoading]);
 
-  // auto-scroll editor content when in edit mode
+  // scroll editor content when in edit mode
   useEffect(() => {
     if (isEditMode && editEditor && editContentRef.current) {
       // scroll to bottom of edit content
@@ -173,25 +164,25 @@ const Home = () => {
     }
   }, [isEditMode, editEditor]);
 
-  // handle input field changes
+  // handle input changes
   const handleInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     setCurrent(e.target.value);
   };
 
-  // execute terminal command - handles both normal and edit modes
+  // execute command - handles both normal and edit modes
   const executeCommand = (command: string) => {
     if (!terminal || !command.trim()) return;
 
-    // route to edit mode handler if active
+    // send to edit handler if we're in edit mode
     if (isEditMode) {
       handleEditCommand(command);
       return;
     }
 
-    // special handling for clear command
+    // clear is special because it's simple
     if (command.trim() === 'clear') {
       setLines([]);
-      // scroll to bottom after clearing
+      // scroll after clearing
       setTimeout(() => {
         if (containerRef.current) {
           containerRef.current.scrollTop = containerRef.current.scrollHeight;
@@ -200,10 +191,10 @@ const Home = () => {
       return;
     }
 
-    // regular command execution flow
+    // regular command execution
     setLines(prev => [...prev, { type: 'input', content: command }]);
 
-    // Check if this is an async command (ping or curl)
+    // check if this is an async command that takes forever
     const isAsyncCommand = command.trim().startsWith('ping ') || command.trim().startsWith('curl ');
 
     try {
@@ -215,16 +206,16 @@ const Home = () => {
           // check if switching to edit mode
           if (command.startsWith('edit ')) {
             try {
-              // try parsing output as editor data
+              // try parsing as editor data
               const editorData = JSON.parse(response.output);
               if (editorData.type === 'edit_editor') {
                 setIsEditMode(true);
                 setEditEditor(editorData);
-                return; // skip showing json output
+                return; // don't show json output
               }
             } catch (e) {
-              // fall back to regular output on parse fail
-              console.log('Failed to parse edit output as JSON, treating as regular output');
+              // not json, show as regular output
+              console.log('failed to parse edit output as json, treating as regular output');
             }
           }
           // handle clear marker from backend
@@ -244,25 +235,25 @@ const Home = () => {
             ...outputLines.map((line: string) => ({ type: 'output' as const, content: line }))
           ]);
           
-          // Add helpful note for async commands
+          // add note for async commands
           if (isAsyncCommand && response.output.includes('Results will appear in terminal as they arrive')) {
             setLines(prev => [
               ...prev,
-              { type: 'output', content: '💡 Tip: Real network requests are running in the background. Results will stream in below.' }
+              { type: 'output', content: 'tip: real network requests are running in the background. results will stream in below.' }
             ]);
           }
         }
       } else {
-        // check for CORS/network errors in output and add extra guidance
+        // check for cors/network errors and add guidance
         let errorMsg = response.output;
         if (errorMsg.match(/CORS|network error|host unreachable|Failed to fetch|NetworkError|TypeError/)) {
           errorMsg +=
-            '\n[frontend] note: most public sites block browser requests due to CORS, so this is probably not your fault. try a CORS-friendly test endpoint like https://httpbin.org/get';
+            '\n[frontend] note: most public sites block browser requests due to cors, so this is probably not your fault. try a cors-friendly test endpoint like https://httpbin.org/get';
         }
         setLines(prev => [...prev, { type: 'error', content: errorMsg }]);
       }
 
-      // keep current directory state in sync
+      // keep current directory in sync
       setCurrentDirectory(terminal.get_current_directory());
       // always scroll to bottom after running a command
       setTimeout(() => {
@@ -271,7 +262,7 @@ const Home = () => {
         }
       }, 0);
     } catch (error) {
-      console.error('Command execution error:', error);
+      console.error('command execution error:', error);
       setLines(prev => [...prev, { type: 'error', content: `Error: ${error}` }]);
       setTimeout(() => {
         if (containerRef.current) {
@@ -327,21 +318,21 @@ const Home = () => {
         setLines(prev => [...prev, { type: 'error', content: response.output }]);
       }
     } catch (error) {
-      console.error('Edit command error:', error);
+      console.error('edit command error:', error);
       setLines(prev => [...prev, { type: 'error', content: `Error: ${error}` }]);
     }
   };
 
-  // handle enter key for command execution
+  // handle keyboard shortcuts and history
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    // Ctrl+L: clear screen
+    // ctrl+l: clear screen like every other terminal
     if (e.ctrlKey && e.key === 'l') {
       e.preventDefault();
       executeCommand('clear');
       setCurrent('');
       return;
     }
-    // up arrow: previous command
+    // up arrow: previous command from history
     if (e.key === 'ArrowUp') {
       e.preventDefault();
       if (history.length === 0) return;
@@ -353,7 +344,7 @@ const Home = () => {
       });
       return;
     }
-    // down arrow: next command
+    // down arrow: next command from history
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       if (history.length === 0) return;
@@ -380,7 +371,7 @@ const Home = () => {
   const handleQuickCommand = (command: string) => {
     if (!terminal) return;
 
-    // special clear command handling
+    // clear command is special
     if (command.trim() === 'clear') {
       setLines([]);
       terminal.execute_command('clear');
@@ -389,6 +380,21 @@ const Home = () => {
 
     // regular command execution
     terminal.execute_command(command);
+  };
+
+  // test function to manually trigger vfs events
+  const testVfsEvents = () => {
+    if (!terminal) return;
+    
+    console.log('[test] testing vfs event system...');
+    
+    // test the rust event emitter
+    try {
+      const result = (terminal as any).test_emit_event();
+      console.log('[test] rust test event result:', result);
+    } catch (error) {
+      console.error('[test] failed to call rust test function:', error);
+    }
   };
 
   // handle drag and drop file upload
@@ -432,7 +438,7 @@ const Home = () => {
     e.stopPropagation();
   };
 
-  // render terminal line
+  // render terminal line based on type
   const renderLine = (line: TerminalLine, index: number) => {
     switch (line.type) {
       case 'input':
@@ -446,7 +452,7 @@ const Home = () => {
     }
   };
 
-  // render editor line
+  // render editor line with line number
   const renderEditLine = (line: EditLine, index: number) => {
     return <div key={index} className="flex items-center">
       <div className="text-gray-500 pr-2">{`#${line.number}`}</div>
@@ -550,14 +556,15 @@ const Home = () => {
         </div>
       </div>
 
-      {/* Loader overlay */}
+      {/* loader overlay */}
       {isLoading && (
         <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-75 z-50">
           <div className="text-white">Loading...</div>
         </div>
       )}
 
-      {/* Drag and drop area */}
+
+      {/* drag and drop area */}
       <div
         onDrop={handleDrop}
         onDragOver={handleDragOver}
@@ -567,7 +574,7 @@ const Home = () => {
   );
 };
 
-// Wrap Home in VfsEventProvider
+// wrap home in vfseventprovider
 const Page = () => (
   <VfsEventProvider>
     <Home />

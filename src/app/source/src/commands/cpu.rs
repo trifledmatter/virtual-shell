@@ -111,7 +111,7 @@ impl Command for CpuCommand {
                                    # Exit program\n\
                                    halt\n";
                     
-                    ctx.vfs.create_file(&path, template.as_bytes().to_vec())
+                    ctx.create_file_with_events(&path, template.as_bytes())
                         .map_err(|e| format!("Error creating file: {}", e))?;
                     
                     Ok(format!("Created new assembly file: {}", filename))

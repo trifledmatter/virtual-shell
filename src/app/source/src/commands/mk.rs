@@ -28,35 +28,20 @@ impl Command for MkCommand {
         
         match kind {
             "file" => {
-                // brute force file creation - just shove it in root dir
-                // no parent dirs, no checks, just raw creation
-                if let Some(parent) = ctx.vfs.resolve_path_mut("/") {
-                    if let crate::vfs::VfsNode::Directory { children, .. } = parent {
-                        children.insert(path.to_string(), crate::vfs::VfsNode::File {
-                            name: path.to_string(),
-                            content: Vec::new(),  // empty file
-                            permissions: crate::vfs::Permissions::default_file(),
-                            mtime: chrono::Local::now(),
-                        });
-                        return Ok(format!("raw file created: {}", path));
-                    }
+                // brute force file creation - create empty file in root dir
+                let full_path = format!("/{}", path.trim_start_matches('/'));
+                match ctx.create_file_with_events(&full_path, &[]) {
+                    Ok(_) => Ok(format!("raw file created: {}", full_path)),
+                    Err(e) => Err(format!("mk: could not create file: {}", e)),
                 }
-                Err("mk: could not create file".to_string())
             }
             "dir" => {
-                // same deal but for dirs - just jam it in the root
-                if let Some(parent) = ctx.vfs.resolve_path_mut("/") {
-                    if let crate::vfs::VfsNode::Directory { children, .. } = parent {
-                        children.insert(path.to_string(), crate::vfs::VfsNode::Directory {
-                            name: path.to_string(),
-                            children: std::collections::HashMap::new(),  // empty dir
-                            permissions: crate::vfs::Permissions::default_dir(),
-                            mtime: chrono::Local::now(),
-                        });
-                        return Ok(format!("raw dir created: {}", path));
-                    }
+                // brute force directory creation - create empty dir in root
+                let full_path = format!("/{}", path.trim_start_matches('/'));
+                match ctx.create_dir_with_events(&full_path) {
+                    Ok(_) => Ok(format!("raw dir created: {}", full_path)),
+                    Err(e) => Err(format!("mk: could not create dir: {}", e)),
                 }
-                Err("mk: could not create dir".to_string())
             }
             _ => Err("mk: first argument must be 'file' or 'dir'".to_string()),
         }

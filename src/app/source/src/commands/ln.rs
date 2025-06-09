@@ -33,7 +33,7 @@ impl Command for LnCommand {
         }
         let target = &rest[0];
         let link_name = &rest[1];
-        ctx.vfs.create_symlink(link_name, target)?;
+        ctx.create_symlink_with_events(link_name, target)?;
         Ok(String::new())
     }
 }

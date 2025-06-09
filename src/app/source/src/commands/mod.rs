@@ -34,3 +34,5 @@ pub mod clear;
 pub mod ping;
 pub mod curl;
 pub mod storage;
+pub mod zip;
+pub mod unzip;

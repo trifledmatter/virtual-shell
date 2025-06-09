@@ -53,7 +53,7 @@ impl Command for RmdirCommand {
             let mut current = dir.as_str();
             
             loop {
-                match try_remove_dir(&mut ctx.vfs, current) {
+                match try_remove_dir(ctx, current) {
                     Ok(()) => {
                         // success - log if verbose
                         if verbose {
@@ -91,24 +91,12 @@ impl Command for RmdirCommand {
 }
 
 // helper to remove a single dir - only if it's empty
-fn try_remove_dir(vfs: &mut crate::vfs::VirtualFileSystem, path: &str) -> Result<(), String> {
-    // get parent dir and target dir name
-    let (parent_path, dir_name) = crate::vfs::VirtualFileSystem::split_path(path)?;
-    
-    // get parent dir's children map
-    let parent = vfs.resolve_path_mut(parent_path)
-        .and_then(|node| match node {
-            VfsNode::Directory { children, .. } => Some(children),
-            _ => None, // parent not a dir
-        })
-        .ok_or("Parent directory does not exist")?;
-    
-    // check if target exists and is an empty dir
-    match parent.get(dir_name) {
+fn try_remove_dir(ctx: &mut TerminalContext, path: &str) -> Result<(), String> {
+    // Check if target exists and is an empty dir first
+    match ctx.vfs.resolve_path(path) {
         Some(VfsNode::Directory { children, .. }) if children.is_empty() => {
-            // found empty dir - remove it
-            parent.remove(dir_name);
-            Ok(())
+            // found empty dir - delete it using the context's delete_with_events method
+            ctx.delete_with_events(path)
         }
         Some(VfsNode::Directory { .. }) => Err("Directory not empty".to_string()),
         Some(_) => Err("Not a directory".to_string()),

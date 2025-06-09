@@ -49,20 +49,8 @@ impl Command for TouchCommand {
                     if !only_atime { *mtime = now; }
                 }
                 None => {
-                    // Create the file
-                    let (parent_path, file_name) = crate::vfs::VirtualFileSystem::split_path(file)?;
-                    let parent = ctx.vfs.resolve_path_mut(parent_path)
-                        .and_then(|node| match node {
-                            VfsNode::Directory { children, .. } => Some(children),
-                            _ => None,
-                        })
-                        .ok_or("touch: cannot create file: parent directory does not exist")?;
-                    parent.insert(file_name.to_string(), VfsNode::File {
-                        name: file_name.to_string(),
-                        content: Vec::new(),
-                        permissions: Permissions::default_file(),
-                        mtime: now,
-                    });
+                    // Create the file with events
+                    ctx.create_file_with_events(file, &[])?;
                 }
             }
         }

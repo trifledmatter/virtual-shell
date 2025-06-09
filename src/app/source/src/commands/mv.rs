@@ -73,98 +73,78 @@ impl Command for MvCommand {
 }
 
 fn mv_file(ctx: &mut TerminalContext, src: &str, dst: &str, force: bool, no_clobber: bool, verbose: bool, _interactive: bool) -> CommandResult {
-    // bail if source doesn't exist
-    if ctx.vfs.resolve_path_with_symlinks(src, false).is_none() {
-        return Err(format!("mv: cannot stat '{}': No such file or directory", src));
+    // Get the source node info to determine what we're moving
+    let (is_file, is_dir, file_content, is_symlink, symlink_target) = {
+        let src_node = ctx.vfs.resolve_path_with_symlinks(src, false)
+            .ok_or(format!("mv: cannot stat '{}': No such file or directory", src))?;
+        match src_node {
+            VfsNode::File { content, .. } => (true, false, Some(content.clone()), false, None),
+            VfsNode::Directory { .. } => (false, true, None, false, None),
+            VfsNode::Symlink { target, .. } => (false, false, None, true, Some(target.clone())),
+        }
+    };
+    
+    // Check if destination already exists
+    if ctx.vfs.resolve_path(dst).is_some() {
+        if no_clobber {
+            return Ok(String::new()); // silently skip if no-clobber
+        }
+        if !force {
+            return Err(format!("mv: cannot overwrite '{}': File exists", dst));
+        }
+        // For force overwrite, delete the destination first
+        ctx.delete_with_events(dst)?;
     }
     
-    // get parent dirs and filenames for both src and dst
-    let (src_parent_path, src_name) = crate::vfs::VirtualFileSystem::split_path(src)?;
-    let (dst_parent_path, dst_name) = crate::vfs::VirtualFileSystem::split_path(dst)?;
-    
-    // moving within same dir is simpler - just rename
-    if src_parent_path == dst_parent_path {
-        let parent = ctx.vfs.resolve_path_mut(src_parent_path)
-            .and_then(|node| match node {
-                VfsNode::Directory { children, .. } => Some(children),
-                _ => None,
-            })
-            .ok_or("mv: cannot move: parent directory does not exist")?;
-        
-        // nothing to do if src and dst are identical
-        if dst_name == src_name {
-            return Ok(String::new());
-        }
-        
-        // handle destination already exists case
-        if parent.contains_key(dst_name) {
-            if no_clobber {
-                return Ok(String::new()); // silently skip if no-clobber
-            }
-            if !force {
-                return Err(format!("mv: cannot overwrite '{}': File exists", dst));
-            }
-            parent.remove(dst_name); // force overwrite
-        }
-        
-        // do the actual move - remove from src and add to dst
-        let node = parent.remove(src_name).ok_or("mv: source not found")?;
-        parent.insert(dst_name.to_string(), node);
-    } else {
-        // cross-directory move - extract from src, then insert into dst
-        
-        // grab the node from source dir
-        let node = {
-            let src_parent = ctx.vfs.resolve_path_mut(src_parent_path)
-                .and_then(|node| match node {
-                    VfsNode::Directory { children, .. } => Some(children),
-                    _ => None,
-                })
-                .ok_or("mv: cannot move: source parent directory does not exist")?;
-            
-            src_parent.remove(src_name).ok_or("mv: source not found")?
-        };
-        
-        // get the destination dir
-        let dst_parent = ctx.vfs.resolve_path_mut(dst_parent_path)
-            .and_then(|node| match node {
-                VfsNode::Directory { children, .. } => Some(children),
-                _ => None,
-            })
-            .ok_or("mv: cannot move: destination parent directory does not exist")?;
-        
-        // handle if destination already exists
-        if dst_parent.contains_key(dst_name) {
-            if no_clobber {
-                // put the node back in source since we're not moving
-                let src_parent = ctx.vfs.resolve_path_mut(src_parent_path)
-                    .and_then(|node| match node {
-                        VfsNode::Directory { children, .. } => Some(children),
-                        _ => None,
-                    })
-                    .unwrap();
-                src_parent.insert(src_name.to_string(), node);
-                return Ok(String::new());
-            }
-            if !force {
-                // put the node back in source since we're erroring
-                let src_parent = ctx.vfs.resolve_path_mut(src_parent_path)
-                    .and_then(|node| match node {
-                        VfsNode::Directory { children, .. } => Some(children),
-                        _ => None,
-                    })
-                    .unwrap();
-                src_parent.insert(src_name.to_string(), node);
-                return Err(format!("mv: cannot overwrite '{}': File exists", dst));
-            }
-            dst_parent.remove(dst_name); // force overwrite
-        }
-        
-        // finally insert the node at destination
-        dst_parent.insert(dst_name.to_string(), node);
+    // Create the destination based on source type
+    if is_file {
+        ctx.create_file_with_events(dst, &file_content.unwrap())?;
+    } else if is_dir {
+        // For directories, we need to recursively move the entire tree
+        return mv_dir_recursive(ctx, src, dst, force, no_clobber, verbose);
+    } else if is_symlink {
+        ctx.create_symlink_with_events(dst, &symlink_target.unwrap())?;
     }
+    
+    // Delete the source after successful creation
+    ctx.delete_with_events(src)?;
     
     // only print output in verbose mode
+    if verbose {
+        Ok(format!("'{}' -> '{}'", src, dst))
+    } else {
+        Ok(String::new())
+    }
+}
+
+// Helper function to recursively move directories
+fn mv_dir_recursive(ctx: &mut TerminalContext, src: &str, dst: &str, force: bool, no_clobber: bool, verbose: bool) -> CommandResult {
+    // Get all children of the source directory
+    let src_children = {
+        let src_node = ctx.vfs.resolve_path(src).ok_or(format!("mv: cannot access '{}': No such file or directory", src))?;
+        match src_node {
+            VfsNode::Directory { children, .. } => {
+                let child_names: Vec<String> = children.keys().cloned().collect();
+                child_names
+            }
+            _ => return Err(format!("mv: '{}' is not a directory", src)),
+        }
+    };
+    
+    // Create the destination directory
+    ctx.create_dir_with_events(dst)?;
+    
+    // Recursively move all children
+    for child_name in src_children {
+        let child_src = format!("{}/{}", src.trim_end_matches('/'), child_name);
+        let child_dst = format!("{}/{}", dst.trim_end_matches('/'), child_name);
+        
+        mv_file(ctx, &child_src, &child_dst, force, no_clobber, false, false)?;
+    }
+    
+    // Delete the empty source directory
+    ctx.delete_with_events(src)?;
+    
     if verbose {
         Ok(format!("'{}' -> '{}'", src, dst))
     } else {

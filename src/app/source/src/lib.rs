@@ -4,6 +4,7 @@ pub mod vfs;
 pub mod command;
 pub mod context;
 pub mod commands;
+pub mod vfs_events;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures;
@@ -12,6 +13,7 @@ use command::{CommandRegistry};
 use serde::{Serialize, Deserialize};
 use std::io::{Read, Write};
 use web_sys::{window, CustomEvent, CustomEventInit};
+use vfs_events::emit_vfs_event;
 
 // better errors in browser console
 #[cfg(feature = "console_error_panic_hook")]
@@ -40,27 +42,7 @@ pub fn send_async_result(result: &str) {
     }
 }
 
-// Helper function to emit VFS events for frontend persistence
-fn emit_vfs_event(event_type: &str, path: &str, content: Option<&[u8]>) {
-    if let Some(win) = window() {
-        let mut event_detail = serde_json::json!({
-            "path": path
-        });
-        
-        // Add content for write operations
-        if let Some(content_bytes) = content {
-            event_detail["content"] = serde_json::json!(content_bytes);
-        }
-        
-        // Create custom event
-        let mut event_init = CustomEventInit::new();
-        event_init.set_detail(&serde_wasm_bindgen::to_value(&event_detail).unwrap_or(JsValue::NULL));
-        
-        if let Ok(custom_event) = CustomEvent::new_with_event_init_dict(event_type, &event_init) {
-            let _ = win.dispatch_event(&custom_event);
-        }
-    }
-}
+
 
 // main terminal struct - keeps state between calls
 // ctx = context, registry = available commands
@@ -126,8 +108,16 @@ impl Terminal {
     /// load filesystem data from frontend (ZenFS)
     #[wasm_bindgen]
     pub fn load_filesystem_data(&mut self, files_json: &str) -> JsValue {
+        web_sys::console::log_1(&"[RUST VFS] 📥 Loading filesystem data from ZenFS...".into());
+        
         match serde_json::from_str::<Vec<serde_json::Value>>(files_json) {
             Ok(files) => {
+                web_sys::console::log_2(
+                    &"[RUST VFS] 📊 Processing".into(),
+                    &(files.len() as u32).into(),
+                );
+                web_sys::console::log_1(&"files".into());
+                
                 let mut loaded_count = 0;
                 let mut error_count = 0;
 
@@ -154,15 +144,42 @@ impl Terminal {
                                 }
 
                                 // Create the file
+                                web_sys::console::log_3(
+                                    &"[RUST VFS] 📝 Creating file:".into(),
+                                    &path.into(),
+                                    &format!("({} bytes)", content_bytes.len()).into(),
+                                );
+                                
                                 match self.ctx.vfs.create_file(path, content_bytes.clone()) {
                                     Ok(_) => {
+                                        web_sys::console::log_2(
+                                            &"[RUST VFS] ✅ File created:".into(),
+                                            &path.into(),
+                                        );
                                         loaded_count += 1;
                                     }
                                     Err(_) => {
+                                        web_sys::console::log_2(
+                                            &"[RUST VFS] 🔄 File exists, updating:".into(),
+                                            &path.into(),
+                                        );
                                         // File might already exist, try to update it
                                         match self.ctx.vfs.write_file(path, content_bytes) {
-                                            Ok(_) => loaded_count += 1,
-                                            Err(_) => error_count += 1,
+                                            Ok(_) => {
+                                                web_sys::console::log_2(
+                                                    &"[RUST VFS] ✅ File updated:".into(),
+                                                    &path.into(),
+                                                );
+                                                loaded_count += 1;
+                                            }
+                                            Err(e) => {
+                                                web_sys::console::error_3(
+                                                    &"[RUST VFS] ❌ Failed to update file:".into(),
+                                                    &path.into(),
+                                                    &e.into(),
+                                                );
+                                                error_count += 1;
+                                            }
                                         }
                                     }
                                 }
@@ -207,6 +224,115 @@ impl Terminal {
         }
 
         Ok(())
+    }
+
+    /// helper to create files with automatic VFS event emission
+    pub fn create_file_with_events(&mut self, path: &str, content: &[u8]) -> Result<(), String> {
+        web_sys::console::log_3(
+            &"[RUST VFS] 📝 create_file_with_events called for:".into(),
+            &path.into(),
+            &format!("({} bytes)", content.len()).into(),
+        );
+        
+        // Create directories as needed
+        if let Some(parent_dir) = std::path::Path::new(path).parent() {
+            let parent_str = parent_dir.to_string_lossy();
+            if parent_str != "/" && !parent_str.is_empty() {
+                let _ = self.create_directories_recursive(&parent_str);
+            }
+        }
+
+        // Create the file
+        match self.ctx.vfs.create_file(path, content.to_vec()) {
+            Ok(_) => {
+                web_sys::console::log_2(
+                    &"[RUST VFS] ✅ File created, emitting VFS event:".into(),
+                    &path.into(),
+                );
+                // Emit VFS event for frontend to save to IndexedDB
+                emit_vfs_event("vfs-create-file", path, Some(content));
+                Ok(())
+            }
+            Err(e) => {
+                web_sys::console::error_3(
+                    &"[RUST VFS] ❌ Failed to create file:".into(),
+                    &path.into(),
+                    &e.clone().into(),
+                );
+                Err(e)
+            }
+        }
+    }
+
+    /// helper to write files with automatic VFS event emission  
+    pub fn write_file_with_events(&mut self, path: &str, content: &[u8]) -> Result<(), String> {
+        web_sys::console::log_3(
+            &"[RUST VFS] 📝 write_file_with_events called for:".into(),
+            &path.into(),
+            &format!("({} bytes)", content.len()).into(),
+        );
+
+        // Try write first, then create if needed
+        match self.ctx.vfs.write_file(path, content.to_vec()) {
+            Ok(_) => {
+                web_sys::console::log_2(
+                    &"[RUST VFS] ✅ File written, emitting VFS event:".into(),
+                    &path.into(),
+                );
+                // Emit VFS event for frontend to save to IndexedDB
+                emit_vfs_event("vfs-write-file", path, Some(content));
+                Ok(())
+            }
+            Err(_) => {
+                web_sys::console::log_1(&"[RUST VFS] 📝 File doesn't exist, creating with events".into());
+                // File doesn't exist, create it with events
+                self.create_file_with_events(path, content)
+            }
+        }
+    }
+
+    /// test function to manually emit a VFS event - for debugging
+    #[wasm_bindgen]
+    pub fn test_emit_event(&self) -> JsValue {
+        web_sys::console::log_1(&"[RUST VFS] 🧪 Manually testing event emission...".into());
+        
+        // Check if we have access to window and document
+        if let Some(win) = window() {
+            web_sys::console::log_1(&"[RUST VFS] ✅ Window object available".into());
+            
+            // Check for global VFS callback
+            let global = win.as_ref();
+            if let Ok(callback_prop) = js_sys::Reflect::get(global, &"__vfsCallback".into()) {
+                if !callback_prop.is_undefined() && callback_prop.is_function() {
+                    web_sys::console::log_1(&"[RUST VFS] ✅ Global __vfsCallback found and is a function".into());
+                } else {
+                    web_sys::console::warn_1(&"[RUST VFS] ⚠️ __vfsCallback found but is not a function".into());
+                }
+            } else {
+                web_sys::console::warn_1(&"[RUST VFS] ⚠️ __vfsCallback not found on window".into());
+            }
+            
+            if let Some(doc) = win.document() {
+                web_sys::console::log_1(&"[RUST VFS] ✅ Document object available".into());
+            } else {
+                web_sys::console::warn_1(&"[RUST VFS] ⚠️ Document object not available".into());
+            }
+            
+            // Check if we can access the location
+            let location = win.location();
+            if let Ok(href) = location.href() {
+                web_sys::console::log_2(&"[RUST VFS] 📍 Page location:".into(), &href.into());
+            }
+        } else {
+            web_sys::console::warn_1(&"[RUST VFS] ⚠️ Window object not available".into());
+        }
+        
+        emit_vfs_event("vfs-write-file", "/test-from-rust.txt", Some(b"Hello from Rust!"));
+        
+        serde_wasm_bindgen::to_value(&serde_json::json!({
+            "success": true,
+            "message": "Test event emitted"
+        })).unwrap()
     }
 
     // main entry point - run a command and return result
@@ -336,6 +462,12 @@ impl Terminal {
     // write string to file, create if doesn't exist
     #[wasm_bindgen]
     pub async fn write_file(&mut self, path: &str, content: &str) -> JsValue {
+        web_sys::console::log_3(
+            &"[RUST VFS] 📝 write_file called for:".into(),
+            &path.into(),
+            &format!("({} chars)", content.len()).into(),
+        );
+        
         // handle relative/absolute paths
         let full_path = if path.starts_with('/') {
             path.to_string()
@@ -343,10 +475,19 @@ impl Terminal {
             format!("{}/{}", self.ctx.cwd, path)
         };
         
+        web_sys::console::log_2(
+            &"[RUST VFS] 📍 Full path resolved to:".into(),
+            &full_path.clone().into(),
+        );
+        
         // try write first, then create if needed
         let result = match self.ctx.vfs.write_file(&full_path, content.as_bytes().to_vec()) {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                web_sys::console::log_1(&"[RUST VFS] ✅ File written to VFS successfully".into());
+                Ok(())
+            }
             Err(_) => {
+                web_sys::console::log_1(&"[RUST VFS] 📝 File doesn't exist, creating new file".into());
                 // file doesn't exist, create it
                 self.ctx.vfs.create_file(&full_path, content.as_bytes().to_vec())
             }
@@ -354,6 +495,7 @@ impl Terminal {
         
         match result {
             Ok(_) => {
+                web_sys::console::log_1(&"[RUST VFS] 🎯 About to emit VFS event...".into());
                 // Emit VFS event for frontend to save to IndexedDB
                 emit_vfs_event("vfs-write-file", &full_path, Some(content.as_bytes()));
                 
@@ -363,6 +505,10 @@ impl Terminal {
                 })).unwrap()
             }
             Err(e) => {
+                web_sys::console::error_2(
+                    &"[RUST VFS] ❌ Failed to write file:".into(),
+                    &e.clone().into(),
+                );
                 serde_wasm_bindgen::to_value(&serde_json::json!({
                     "success": false,
                     "error": e.to_string(),

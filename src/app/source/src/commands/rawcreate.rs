@@ -29,7 +29,7 @@ impl Command for RawCreateCommand {
         if bytes.is_empty() {
             return Err("rawcreate: no valid bytes given".to_string());
         }
-        match ctx.vfs.create_file(path, bytes) {
+        match ctx.create_file_with_events(path, &bytes) {
             Ok(_) => Ok(format!("made file {} ({} bytes)", path, args.len() - 1)),
             Err(e) => Err(format!("rawcreate: {}", e)),
         }

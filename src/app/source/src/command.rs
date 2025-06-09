@@ -65,6 +65,8 @@ impl CommandRegistry {
         reg.register_command("curl", Box::new(crate::commands::curl::CurlCommand));
         reg.register_command("ping", Box::new(crate::commands::ping::PingCommand));
         reg.register_command("storage", Box::new(crate::commands::storage::StorageCommand));
+        reg.register_command("zip", Box::new(crate::commands::zip::ZipCommand));
+        reg.register_command("unzip", Box::new(crate::commands::unzip::UnzipCommand));
         reg
     }
 }

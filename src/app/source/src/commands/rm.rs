@@ -43,7 +43,7 @@ impl Command for RmCommand {
                 Some(VfsNode::Directory { .. }) if !recursive && !dir_mode => {
                     Err("rm: cannot remove directory without -r or --dir".to_string())
                 }
-                Some(_) => ctx.vfs.delete(file),
+                Some(_) => ctx.delete_with_events(file),
                 None => {
                     if force {
                         Ok(())
