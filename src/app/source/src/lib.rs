@@ -18,6 +18,26 @@ pub fn set_panic_hook() {
     console_error_panic_hook::set_once();
 }
 
+// Global callback for async results - will be set by JavaScript
+static mut ASYNC_CALLBACK: Option<js_sys::Function> = None;
+
+// Function to set the async callback from JavaScript
+#[wasm_bindgen]
+pub fn set_async_result_callback(callback: js_sys::Function) {
+    unsafe {
+        ASYNC_CALLBACK = Some(callback);
+    }
+}
+
+// Function to send async results to the terminal
+pub fn send_async_result(result: &str) {
+    unsafe {
+        if let Some(ref callback) = ASYNC_CALLBACK {
+            let _ = callback.call1(&JsValue::NULL, &JsValue::from_str(result));
+        }
+    }
+}
+
 // main terminal struct - keeps state between calls
 // ctx = context, registry = available commands
 #[wasm_bindgen]

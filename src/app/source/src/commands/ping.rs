@@ -1,16 +1,12 @@
-// yeah, imports and stuff
 use crate::command::{Command, CommandResult};
 use crate::context::TerminalContext;
 
-// whatever, just a struct
 pub struct PingCommand;
 
 impl Command for PingCommand {
     fn execute(&self, args: &[String], _ctx: &mut TerminalContext) -> CommandResult {
-        // options, you know the drill
+        // parse args like we always do
         let mut count = 4;
-        let mut interval = 1000.0; // ms, i guess
-        let mut deadline = None;
         let mut quiet = false;
         let mut url = None;
         let mut i = 0;
@@ -19,18 +15,6 @@ impl Command for PingCommand {
                 "-c" => {
                     if let Some(val) = args.get(i+1) {
                         count = val.parse().unwrap_or(4);
-                        i += 1;
-                    }
-                }
-                "-i" => {
-                    if let Some(val) = args.get(i+1) {
-                        interval = val.parse::<f64>().unwrap_or(1.0) * 1000.0;
-                        i += 1;
-                    }
-                }
-                "-w" => {
-                    if let Some(val) = args.get(i+1) {
-                        deadline = val.parse::<f64>().ok().map(|d| d * 1000.0);
                         i += 1;
                     }
                 }
@@ -48,101 +32,120 @@ impl Command for PingCommand {
             Some(u) => u,
             None => return Err("Usage: ping [options] <url>".to_string()),
         };
+        
         #[cfg(target_arch = "wasm32")]
         {
-            // imports for wasm, whatever
+            use wasm_bindgen_futures::{spawn_local, JsFuture};
             use wasm_bindgen::JsCast;
-            use wasm_bindgen_futures::JsFuture;
             use web_sys::{Request, RequestInit, RequestMode, Response, window};
             use js_sys::Date;
-            use gloo_timers::future::TimeoutFuture;
-            use futures::executor::block_on;
-            use std::time::Instant;
 
-            // not really using this, but whatever
-            let _results: Vec<()> = Vec::new();
-            let start_time = Instant::now();
-            let mut sent = 0;
-            let mut received = 0;
-            let mut total_rtt = 0.0;
-            let mut min_rtt = f64::MAX;
-            let mut max_rtt = 0.0;
-            let mut output = String::new();
-            // clone url so we don't borrow it across await/block_on
-            for _seq in 0..count {
-                let url_owned = url.clone();
-                if let Some(deadline_ms) = deadline {
-                    if start_time.elapsed().as_millis() as f64 > deadline_ms {
-                        break;
-                    }
-                }
-                // set up the request, blah blah
-                let mut opts = RequestInit::new();
-                opts.method("HEAD");
-                opts.mode(RequestMode::Cors);
-                let request = match Request::new_with_str_and_init(&url_owned, &opts) {
-                    Ok(req) => req,
-                    Err(_) => {
-                        if !quiet { output.push_str("[ping] Invalid URL\n"); }
-                        break;
+            // check if url is remotely valid
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err("URL must start with http:// or https://".to_string());
+            }
+
+            let url_clone = url.clone();
+            let quiet_clone = quiet;
+            
+            // spawn async task because blocking is for noobs
+            spawn_local(async move {
+                let mut sent = 0;
+                let mut received = 0;
+                let mut total_rtt = 0.0;
+                let mut min_rtt = f64::MAX;
+                let mut max_rtt = 0.0;
+                
+                let window = match window() {
+                    Some(w) => w,
+                    None => {
+                        crate::send_async_result("No window object available");
+                        return;
                     }
                 };
-                let win = window().unwrap();
-                let start = Date::now();
-                let resp_value = block_on(JsFuture::from(win.fetch_with_request(&request)));
-                let end = Date::now();
-                sent += 1;
-                match resp_value {
-                    Ok(val) => {
-                        let resp: Response = val.dyn_into().unwrap();
-                        let status = resp.status();
-                        let rtt = end - start;
-                        if status >= 200 && status < 400 {
-                            received += 1;
-                            total_rtt += rtt;
-                            if rtt < min_rtt { min_rtt = rtt; }
-                            if rtt > max_rtt { max_rtt = rtt; }
-                            if !quiet {
-                                output.push_str(&format!("[ping] {}: reply, status {}, time {:.2} ms\n", url_owned, status, rtt));
+
+                for seq in 0..count {
+                    sent += 1;
+                    let start_time = Date::now();
+                    
+                    // head request to avoid cors drama
+                    let mut opts = RequestInit::new();
+                    opts.set_method("HEAD");
+                    opts.set_mode(RequestMode::NoCors);
+                    
+                    let request = match Request::new_with_str_and_init(&url_clone, &opts) {
+                        Ok(req) => req,
+                        Err(_) => {
+                            if !quiet_clone {
+                                crate::send_async_result(&format!("{}: Invalid URL", url_clone));
                             }
-                        } else {
-                            if !quiet {
-                                output.push_str(&format!("[ping] {}: no reply, status {}\n", url_owned, status));
+                            continue;
+                        }
+                    };
+                    
+                    // await the fetch like civilized people
+                    match JsFuture::from(window.fetch_with_request(&request)).await {
+                        Ok(response_val) => {
+                            let end_time = Date::now();
+                            let rtt = end_time - start_time;
+                            
+                            if let Ok(response) = response_val.dyn_into::<Response>() {
+                                let status = response.status();
+                                if response.ok() {
+                                    received += 1;
+                                    total_rtt += rtt;
+                                    if rtt < min_rtt { min_rtt = rtt; }
+                                    if rtt > max_rtt { max_rtt = rtt; }
+                                    if !quiet_clone {
+                                        crate::send_async_result(&format!("{}: reply, time {:.2} ms, seq={}", url_clone, rtt, seq));
+                                    }
+                                } else {
+                                    if !quiet_clone {
+                                        crate::send_async_result(&format!("{}: no reply, status {}, seq={}", url_clone, status, seq));
+                                    }
+                                }
+                            } else {
+                                // probably cors, because internet
+                                if !quiet_clone {
+                                    crate::send_async_result(&format!("{}: request blocked (CORS), seq={}", url_clone, seq));
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            if !quiet_clone {
+                                crate::send_async_result(&format!("{}: network error or CORS restriction, seq={}", url_clone, seq));
                             }
                         }
                     }
-                    Err(_) => {
-                        if !quiet {
-                            output.push_str(&format!(
-                                "[ping] {}: network error or host unreachable\n[ping] note: most public sites block browser requests due to CORS, so this is probably not your fault. try a CORS-friendly test endpoint like https://httpbin.org/get\n",
-                                url_owned
-                            ));
-                        }
+                    
+                    // wait between pings like ping does
+                    if seq < count - 1 {
+                        gloo_timers::future::TimeoutFuture::new(1000).await;
                     }
                 }
-                if count > 1 {
-                    block_on(TimeoutFuture::new(interval as u32));
-                }
-            }
-            // print stats, because why not
-            if !quiet {
-                output.push_str(&format!(
-                    "\n--- {} ping statistics ---\n{} packets transmitted, {} received, {:.1}% packet loss\n",
-                    url.as_str(), sent, received, 100.0 * (sent - received) as f64 / sent as f64
-                ));
-                if received > 0 {
-                    output.push_str(&format!(
-                        "rtt min/avg/max = {:.2}/{:.2}/{:.2} ms\n",
-                        min_rtt, total_rtt / received as f64, max_rtt
+                
+                // show stats if not quiet
+                if !quiet_clone {
+                    crate::send_async_result(&format!(
+                        "\n--- {} ping statistics ---\n{} packets transmitted, {} received, {:.1}% packet loss",
+                        url_clone, sent, received, if sent > 0 { 100.0 * (sent - received) as f64 / sent as f64 } else { 0.0 }
                     ));
+                    
+                    if received > 0 {
+                        crate::send_async_result(&format!(
+                            "rtt min/avg/max = {:.2}/{:.2}/{:.2} ms",
+                            min_rtt, total_rtt / received as f64, max_rtt
+                        ));
+                    }
                 }
-            }
-            Ok(output)
+            });
+            
+            // return immediately with helpful info
+            Ok(format!("Starting ping to {} ({} packets)...\n💡 NOTE: If you get CORS errors, try these working endpoints:\n  • https://httpbin.org/get\n  • https://jsonplaceholder.typicode.com/posts/1", url, count))
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            // not gonna work here, sorry
-            Ok("[ping] This command only works in the browser (WASM)".to_string())
+            Ok("This command only works in the browser (WASM)".to_string())
         }
     }
 }

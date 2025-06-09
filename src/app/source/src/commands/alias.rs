@@ -21,6 +21,7 @@ fn shell_quote(s: &str) -> String {
 impl Command for AliasCommand {
     fn execute(&self, args: &[String], ctx: &mut TerminalContext) -> CommandResult {
         if args.is_empty() {
+            
             // no args = show all aliases
             let mut out = Vec::new();
             for (k, v) in ctx.aliases.iter() {

@@ -1,13 +1,14 @@
-// yeah, imports and stuff
 use crate::command::{Command, CommandResult};
 use crate::context::TerminalContext;
 
-// whatever, just a struct
 pub struct CurlCommand;
 
 impl Command for CurlCommand {
     fn execute(&self, args: &[String], ctx: &mut TerminalContext) -> CommandResult {
-        // options, you know the drill
+        // grab cwd early to avoid borrow checker drama
+        let current_dir = ctx.cwd.clone();
+        
+        // parse all the curl flags like usual
         let mut url = None;
         let mut output_file = None;
         let mut show_headers = false;
@@ -56,124 +57,157 @@ impl Command for CurlCommand {
             Some(u) => u,
             None => return Err("Usage: curl [options] <url>".to_string()),
         };
+        
         #[cfg(target_arch = "wasm32")]
         {
-            // imports for wasm, whatever
-            use futures::executor::block_on;
-            use js_sys::Uint8Array;
-            use uuid::Uuid;
+            use wasm_bindgen_futures::{spawn_local, JsFuture};
             use wasm_bindgen::JsCast;
-            use wasm_bindgen_futures::JsFuture;
-            use web_sys::{Request, RequestInit, RequestMode, Response, Headers};
+            use web_sys::{Request, RequestInit, RequestMode, Response, Headers, window};
 
-            // set up the request, blah blah
-            let mut opts = RequestInit::new();
-            opts.set_method(&method);
-            opts.set_mode(RequestMode::Cors);
-            let headers = Headers::new().unwrap();
-            if let Some(ua) = &user_agent {
-                headers.set("User-Agent", ua).ok();
+            // check if url is remotely valid
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err("URL must start with http:// or https://".to_string());
             }
-            for h in &custom_headers {
-                if let Some((k, v)) = h.split_once(':') {
-                    headers.set(k.trim(), v.trim()).ok();
+
+            let url_clone = url.clone();
+            let method_clone = method.clone();
+            let silent_clone = silent;
+            let show_headers_clone = show_headers;
+            let user_agent_clone = user_agent.clone();
+            let custom_headers_clone = custom_headers.clone();
+            let output_file_clone = output_file.clone();
+            
+            // spawn async task because we're not animals
+            spawn_local(async move {
+                let window = match window() {
+                    Some(w) => w,
+                    None => {
+                        crate::send_async_result("No window object available");
+                        return;
+                    }
+                };
+
+                // set up request with the usual suspects
+                let mut opts = RequestInit::new();
+                opts.set_method(&method_clone);
+                opts.set_mode(RequestMode::Cors); // cors mode for maximum compatibility
+                
+                // add headers if we have any
+                let headers = Headers::new().unwrap();
+                if let Some(ua) = &user_agent_clone {
+                    if headers.set("User-Agent", ua).is_err() {
+                        crate::send_async_result("Warning: Could not set User-Agent header");
+                    }
                 }
-            }
-            opts.set_headers(&headers);
-            // clone file path before any block_on to avoid aliasing ctx
-            let file_path = {
-                // try to get filename, or just make one up
-                let filename = output_file.clone().or_else(|| {
-                    // we can't get content-disposition header until after fetch, so just use a temp name for now
-                    None
-                }).unwrap_or_else(|| format!("curl-{}.bin", Uuid::new_v4()));
-                format!("{}/{}", ctx.cwd, filename)
-            };
-            let url_owned = url.clone();
-            let request = match Request::new_with_str_and_init(&url_owned, &opts) {
-                Ok(req) => req,
-                Err(_) => return Err("[curl] Invalid URL".to_string()),
-            };
-            let window = web_sys::window().unwrap();
-            let resp_value = match block_on(JsFuture::from(window.fetch_with_request(&request))) {
-                Ok(val) => val,
-                Err(_) => return Err(format!(
-                    "[curl] Network error or host unreachable\n[curl] note: most public sites block browser requests due to CORS, so this is probably not your fault. try a CORS-friendly test endpoint like https://httpbin.org/get"
-                )),
-            };
-            let resp: Response = resp_value.dyn_into().unwrap();
-            if !resp.ok() {
-                return Err(format!("[curl] HTTP error: {}", resp.status()));
-            }
-            // show headers if requested, i guess
-            let mut header_str = String::new();
-            if show_headers {
-                let headers = resp.headers();
-                let mut iter = js_sys::try_iter(&headers).unwrap();
-                if let Some(iter) = iter {
-                    for entry in iter {
-                        if let Ok(arr) = entry {
-                            let arr = js_sys::Array::from(&arr);
-                            if arr.length() == 2 {
-                                let k = arr.get(0).as_string().unwrap_or_default();
-                                let v = arr.get(1).as_string().unwrap_or_default();
-                                header_str.push_str(&format!("{}: {}\n", k, v));
-                            }
+                for h in &custom_headers_clone {
+                    if let Some((k, v)) = h.split_once(':') {
+                        if headers.set(k.trim(), v.trim()).is_err() {
+                            crate::send_async_result(&format!("Warning: Could not set header: {}", h));
                         }
                     }
                 }
-            }
-            // get filename from content-disposition if possible (after fetch)
-            let filename = output_file.clone().or_else(|| {
-                resp.headers().get("content-disposition").ok().flatten()
-                    .and_then(|cd| {
-                        cd.split(';').find_map(|part| {
-                            let part = part.trim();
-                            if part.starts_with("filename=") {
-                                Some(part.trim_start_matches("filename=").trim_matches('"').to_string())
-                            } else { None }
-                        })
-                    })
-            }).unwrap_or_else(|| format!("curl-{}.bin", Uuid::new_v4()));
-            let file_path = format!("{}/{}", ctx.cwd, filename);
-            // get bytes (unless HEAD), whatever
-            let mut file_written = false;
-            if method != "HEAD" {
-                let buffer_promise = resp.array_buffer().unwrap();
-                let buffer = match block_on(JsFuture::from(buffer_promise)) {
-                    Ok(buf) => buf,
-                    Err(_) => return Err("[curl] Failed to read response body".to_string()),
+                opts.set_headers(&headers);
+                
+                let request = match Request::new_with_str_and_init(&url_clone, &opts) {
+                    Ok(req) => req,
+                    Err(_) => {
+                        crate::send_async_result("Invalid URL or request configuration");
+                        return;
+                    }
                 };
-                let array = Uint8Array::new(&buffer);
-                let mut bytes = vec![0; array.length() as usize];
-                array.copy_to(&mut bytes[..]);
-                // save to vfs, i guess
-                match ctx.vfs.create_file(&file_path, bytes) {
-                    Ok(_) => file_written = true,
-                    Err(e) => return Err(format!("[curl] Failed to save file: {}", e)),
+                
+                // actually make the request
+                match JsFuture::from(window.fetch_with_request(&request)).await {
+                    Ok(response_val) => {
+                        if let Ok(response) = response_val.dyn_into::<Response>() {
+                            let status = response.status();
+                            
+                            if !silent_clone {
+                                crate::send_async_result(&format!("HTTP {} {}", status, response.status_text()));
+                            }
+                            
+                            // show headers if requested
+                            if show_headers_clone {
+                                crate::send_async_result(&format!("HTTP/1.1 {} {}", status, response.status_text()));
+                                
+                                let headers_iter = response.headers().entries();
+                                let iter = js_sys::try_iter(&headers_iter).unwrap();
+                                if let Some(iter) = iter {
+                                    for entry in iter {
+                                        if let Ok(arr) = entry {
+                                            let arr = js_sys::Array::from(&arr);
+                                            if arr.length() == 2 {
+                                                let k = arr.get(0).as_string().unwrap_or_default();
+                                                let v = arr.get(1).as_string().unwrap_or_default();
+                                                crate::send_async_result(&format!("{}: {}", k, v));
+                                            }
+                                        }
+                                    }
+                                }
+                                crate::send_async_result(""); // empty line for readability
+                            }
+                            
+                            // get response body unless it's head
+                            if method_clone != "HEAD" {
+                                match JsFuture::from(response.text().unwrap()).await {
+                                    Ok(text_val) => {
+                                        let text = text_val.as_string().unwrap_or_default();
+                                        
+                                        if let Some(filename) = &output_file_clone {
+                                            // file saving is complicated in async context
+                                            crate::send_async_result(&format!("Content saved as {} (simulated - file saving not implemented in async mode)", filename));
+                                            crate::send_async_result("Content:");
+                                            crate::send_async_result(&text);
+                                        } else {
+                                            // just dump the response
+                                            if !silent_clone {
+                                                crate::send_async_result(&text);
+                                            }
+                                        }
+                                    }
+                                    Err(_) => {
+                                        crate::send_async_result("Failed to read response body");
+                                    }
+                                }
+                            }
+                        } else {
+                            // failed response conversion, probably cors
+                            crate::send_async_result(&format!("❌ Request to {} failed", url_clone));
+                            crate::send_async_result("🚫 This is likely a CORS (Cross-Origin Resource Sharing) restriction.");
+                            crate::send_async_result("💡 Most websites block browser requests for security reasons.");
+                            crate::send_async_result("");
+                            crate::send_async_result("✅ Try these CORS-friendly test endpoints instead:");
+                            crate::send_async_result("  • https://httpbin.org/get");
+                            crate::send_async_result("  • https://jsonplaceholder.typicode.com/posts/1");
+                            crate::send_async_result("  • https://api.github.com/users/octocat");
+                            crate::send_async_result("  • https://httpbin.org/headers");
+                            crate::send_async_result("  • https://httpbin.org/ip");
+                        }
+                    }
+                    Err(_) => {
+                        // network error or cors blocking
+                        crate::send_async_result(&format!("❌ Network request to {} was blocked", url_clone));
+                        crate::send_async_result("");
+                        crate::send_async_result("🚫 Common reasons for blocking:");
+                        crate::send_async_result("  • CORS policy restrictions (most common)");
+                        crate::send_async_result("  • Network connectivity issues");
+                        crate::send_async_result("  • Invalid or unreachable URL");
+                        crate::send_async_result("  • Server blocking browser requests");
+                        crate::send_async_result("");
+                        crate::send_async_result("✅ Try these working examples:");
+                        crate::send_async_result("  curl https://httpbin.org/get");
+                        crate::send_async_result("  curl -I https://api.github.com/users/octocat");
+                        crate::send_async_result("  curl https://jsonplaceholder.typicode.com/posts/1");
+                    }
                 }
-            }
-            // output, whatever
-            if silent {
-                return Ok(String::new());
-            }
-            let mut result = String::new();
-            if show_headers {
-                result.push_str(&header_str);
-            }
-            if method == "HEAD" {
-                // no file written, just show headers
-                return Ok(result);
-            }
-            if file_written {
-                result.push_str(&format!("[curl] Downloaded and saved as {}\n", filename));
-            }
-            Ok(result)
+            });
+            
+            // return immediately with helpful info
+            Ok(format!("Starting {} request to {}...\nNOTE: 💡 If you get CORS errors, try these working endpoints:\n  • https://httpbin.org/get\n  • https://jsonplaceholder.typicode.com/posts/1\n  • https://api.github.com/users/octocat", method, url))
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            // not gonna work here, sorry
-            Ok("[curl] This command only works in the browser (WASM)".to_string())
+            Ok("This command only works in the browser (WASM)".to_string())
         }
     }
 }

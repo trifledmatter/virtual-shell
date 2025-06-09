@@ -1,5 +1,6 @@
 /* tslint:disable */
 /* eslint-disable */
+export function set_async_result_callback(callback: Function): void;
 export function get_assembly_template(template_type: string): string;
 export class Terminal {
   free(): void;
@@ -22,6 +23,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
   readonly memory: WebAssembly.Memory;
+  readonly set_async_result_callback: (a: any) => void;
   readonly __wbg_terminal_free: (a: number, b: number) => void;
   readonly terminal_new: () => number;
   readonly terminal_execute_command: (a: number, b: number, c: number) => any;

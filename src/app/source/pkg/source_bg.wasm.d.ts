@@ -1,6 +1,7 @@
 /* tslint:disable */
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
+export const set_async_result_callback: (a: any) => void;
 export const __wbg_terminal_free: (a: number, b: number) => void;
 export const terminal_new: () => number;
 export const terminal_execute_command: (a: number, b: number, c: number) => any;

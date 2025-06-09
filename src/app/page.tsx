@@ -53,9 +53,36 @@ const Home = () => {
   useEffect(() => {
     const init = async () => {
       try {
-        const { Terminal, default: init } = await import("./source/pkg/source");
+        const wasmModule = await import("./source/pkg/source");
+        const { Terminal, default: init } = wasmModule;
+        // Type assertion for the new async callback function
+        const set_async_result_callback = (wasmModule as any).set_async_result_callback;
+        
         await init();
         const term = new Terminal();
+        
+        // Set up async result callback to display results in terminal
+        const handleAsyncResult = (result: string) => {
+          // Split multi-line results and add each line
+          const outputLines = result.split('\n');
+          setLines(prev => [
+            ...prev,
+            ...outputLines.map((line: string) => ({ type: 'output' as const, content: line }))
+          ]);
+          
+          // Auto-scroll to bottom
+          setTimeout(() => {
+            if (containerRef.current) {
+              containerRef.current.scrollTop = containerRef.current.scrollHeight;
+            }
+          }, 0);
+        };
+        
+        // Register the callback with WASM if available
+        if (set_async_result_callback) {
+          set_async_result_callback(handleAsyncResult);
+        }
+        
         setTerminal(term);
         setIsLoading(false);
       } catch (error) {
@@ -119,6 +146,9 @@ const Home = () => {
     // regular command execution flow
     setLines(prev => [...prev, { type: 'input', content: command }]);
 
+    // Check if this is an async command (ping or curl)
+    const isAsyncCommand = command.trim().startsWith('ping ') || command.trim().startsWith('curl ');
+
     try {
       // call wasm terminal
       const response = terminal.execute_command(command);
@@ -156,9 +186,23 @@ const Home = () => {
             ...prev,
             ...outputLines.map((line: string) => ({ type: 'output' as const, content: line }))
           ]);
+          
+          // Add helpful note for async commands
+          if (isAsyncCommand && response.output.includes('Results will appear in terminal as they arrive')) {
+            setLines(prev => [
+              ...prev,
+              { type: 'output', content: '💡 Tip: Real network requests are running in the background. Results will stream in below.' }
+            ]);
+          }
         }
       } else {
-        setLines(prev => [...prev, { type: 'error', content: response.output }]);
+        // check for CORS/network errors in output and add extra guidance
+        let errorMsg = response.output;
+        if (errorMsg.match(/CORS|network error|host unreachable|Failed to fetch|NetworkError|TypeError/)) {
+          errorMsg +=
+            '\n[frontend] note: most public sites block browser requests due to CORS, so this is probably not your fault. try a CORS-friendly test endpoint like https://httpbin.org/get';
+        }
+        setLines(prev => [...prev, { type: 'error', content: errorMsg }]);
       }
 
       // keep current directory state in sync
