@@ -1,17 +1,17 @@
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::JsFuture;
-use web_sys::*;
 use serde::{Serialize, Deserialize};
 use crate::vfs::{VirtualFileSystem, VfsNode};
 use flate2::{Compression, read::DeflateDecoder, write::DeflateEncoder};
 use std::io::{Read, Write};
 use base64::{Engine as _, engine::general_purpose};
+use rexie::*;
 
 const DB_NAME: &str = "TrifledOS_VFS";
 const DB_VERSION: u32 = 1;
 const STORE_NAME: &str = "filesystem";
-const COMPRESSION_THRESHOLD: usize = 1024; // only compress files > 1kb, not worth it otherwise
+const VFS_KEY: &str = "vfs_root";
+const COMPRESSION_THRESHOLD: usize = 1024; // only compress files > 1kb
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct StoredFile {
@@ -54,7 +54,7 @@ pub struct StoredVFS {
 }
 
 pub struct PersistentStorage {
-    db: Option<IdbDatabase>,
+    db: Option<Rexie>,
 }
 
 impl PersistentStorage {
@@ -64,46 +64,25 @@ impl PersistentStorage {
         }
     }
 
-    /// init indexeddb connection
-    pub async fn init(&mut self) -> Result<(), JsValue> {
-        let window = web_sys::window().ok_or("No global window")?;
-        let idb_factory = window.indexed_db()?.ok_or("IndexedDB not available")?;
+    /// init rexie database - much cleaner than raw indexeddb
+    pub async fn init(&mut self) -> std::result::Result<(), JsValue> {
+        web_sys::console::log_1(&"initializing rexie database...".into());
         
-        let open_request = idb_factory.open_with_u32(DB_NAME, DB_VERSION)?;
+        // build database with rexie builder pattern
+        let rexie = Rexie::builder(DB_NAME)
+            .version(DB_VERSION)
+            .add_object_store(ObjectStore::new(STORE_NAME))
+            .build()
+            .await
+            .map_err(|e| JsValue::from_str(&format!("rexie build error: {:?}", e)))?;
         
-        // setup upgrade handler
-        let upgrade_closure = Closure::wrap(Box::new(move |event: Event| {
-            let target = event.target().unwrap();
-            let request: IdbRequest = target.dyn_into().unwrap();
-            let db: IdbDatabase = request.result().unwrap().dyn_into().unwrap();
-            
-            // try to create object store - will fail silently if exists already
-            let _ = db.create_object_store(STORE_NAME);
-        }) as Box<dyn FnMut(_)>);
-        
-        open_request.set_onupgradeneeded(Some(upgrade_closure.as_ref().unchecked_ref()));
-        upgrade_closure.forget(); // keep closure alive
-        
-        // wait for database to open using a promise wrapper
-        let promise = js_sys::Promise::new(&mut |resolve, _| {
-            let success_closure = Closure::wrap(Box::new(move |_: Event| {
-                resolve.call0(&JsValue::NULL).unwrap();
-            }) as Box<dyn FnMut(_)>);
-            
-            open_request.set_onsuccess(Some(success_closure.as_ref().unchecked_ref()));
-            success_closure.forget();
-        });
-        
-        JsFuture::from(promise).await?;
-        
-        // get the database from the request
-        self.db = Some(open_request.result()?.dyn_into()?);
-        
+        self.db = Some(rexie);
+        web_sys::console::log_1(&"rexie database initialized successfully".into());
         Ok(())
     }
 
     /// compress data if above threshold using deflate
-    fn compress_data(data: &[u8]) -> Result<(Vec<u8>, bool), Box<dyn std::error::Error>> {
+    fn compress_data(data: &[u8]) -> std::result::Result<(Vec<u8>, bool), Box<dyn std::error::Error>> {
         if data.len() < COMPRESSION_THRESHOLD {
             return Ok((data.to_vec(), false));
         }
@@ -121,7 +100,7 @@ impl PersistentStorage {
     }
 
     /// decompress data if compressed using deflate
-    fn decompress_data(data: &[u8], compressed: bool) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    fn decompress_data(data: &[u8], compressed: bool) -> std::result::Result<Vec<u8>, Box<dyn std::error::Error>> {
         if !compressed {
             return Ok(data.to_vec());
         }
@@ -179,7 +158,7 @@ impl PersistentStorage {
     }
 
     /// convert stored format back to vfs node
-    fn stored_to_node(&self, stored: &StoredNode) -> Result<VfsNode, Box<dyn std::error::Error>> {
+    fn stored_to_node(&self, stored: &StoredNode) -> std::result::Result<VfsNode, Box<dyn std::error::Error>> {
         match stored {
             StoredNode::File(file) => {
                 let decoded_content = general_purpose::STANDARD.decode(&file.content)?;
@@ -250,62 +229,11 @@ impl PersistentStorage {
         }
     }
 
-    /// save a single node to indexeddb
-    pub async fn save_node(&self, path: &str, node: &VfsNode) -> Result<(), JsValue> {
-        let db = self.db.as_ref().ok_or("Database not initialized")?;
+    /// save entire vfs using rexie - much cleaner!
+    pub async fn save_vfs(&self, vfs: &VirtualFileSystem) -> std::result::Result<(), JsValue> {
+        web_sys::console::log_1(&"starting vfs save with rexie...".into());
         
-        // create readwrite transaction
-        let transaction = db.transaction_with_str_and_mode(STORE_NAME, IdbTransactionMode::Readwrite)?;
-        let store = transaction.object_store(STORE_NAME)?;
-        
-        let stored_node = self.node_to_stored(node, path);
-        let serialized = serde_json::to_string(&stored_node)
-            .map_err(|e| JsValue::from_str(&format!("serialization error: {}", e)))?;
-        
-        // put data and wait for completion
-        let request = store.put_with_key(&JsValue::from_str(&serialized), &JsValue::from_str(path))?;
-        
-        // wait for the put operation to complete
-        let promise = js_sys::Promise::new(&mut |resolve, reject| {
-            let success_closure = Closure::wrap(Box::new({
-                let request = request.clone();
-                move |_: Event| {
-                    resolve.call0(&JsValue::NULL).unwrap();
-                }
-            }) as Box<dyn FnMut(_)>);
-            
-            let error_closure = Closure::wrap(Box::new({
-                let request = request.clone();
-                move |_: Event| {
-                    let error = match request.error() {
-                        Ok(Some(dom_err)) => JsValue::from(dom_err),
-                        Ok(None) => JsValue::from_str("unknown save error"),
-                        Err(js_err) => js_err,
-                    };
-                    web_sys::console::log_1(&format!("vfs save failed: {:?}", error).into());
-                    reject.call1(&JsValue::NULL, &error).unwrap();
-                }
-            }) as Box<dyn FnMut(_)>);
-            
-            request.set_onsuccess(Some(success_closure.as_ref().unchecked_ref()));
-            request.set_onerror(Some(error_closure.as_ref().unchecked_ref()));
-            success_closure.forget();
-            error_closure.forget();
-        });
-        
-        JsFuture::from(promise).await?;
-        Ok(())
-    }
-
-    /// save entire vfs to indexeddb
-    pub async fn save_vfs(&self, vfs: &VirtualFileSystem) -> Result<(), JsValue> {
-        web_sys::console::log_1(&"starting vfs save...".into());
-        
-        let db = self.db.as_ref().ok_or("Database not initialized")?;
-        
-        // create readwrite transaction
-        let transaction = db.transaction_with_str_and_mode(STORE_NAME, IdbTransactionMode::Readwrite)?;
-        let store = transaction.object_store(STORE_NAME)?;
+        let db = self.db.as_ref().ok_or("database not initialized")?;
         
         // serialize the entire vfs
         let stored_vfs = StoredVFS {
@@ -318,105 +246,46 @@ impl PersistentStorage {
         
         web_sys::console::log_1(&format!("serialized vfs size: {} bytes", serialized.len()).into());
         
-        // put data and wait for completion
-        let request = store.put_with_key(&JsValue::from_str(&serialized), &JsValue::from_str("__VFS_ROOT__"))?;
+        // start transaction and save - rexie makes this super clean!
+        let transaction = db.transaction(&[STORE_NAME], TransactionMode::ReadWrite)
+            .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
         
-        // wait for the put operation to complete
-        let promise = js_sys::Promise::new(&mut |resolve, reject| {
-            let success_closure = Closure::wrap(Box::new({
-                let request = request.clone();
-                move |_: Event| {
-                    web_sys::console::log_1(&"vfs save completed successfully".into());
-                    resolve.call0(&JsValue::NULL).unwrap();
-                }
-            }) as Box<dyn FnMut(_)>);
-            
-            let error_closure = Closure::wrap(Box::new({
-                let request = request.clone();
-                move |_: Event| {
-                    let error = match request.error() {
-                        Ok(Some(dom_err)) => JsValue::from(dom_err),
-                        Ok(None) => JsValue::from_str("unknown save error"),
-                        Err(js_err) => js_err,
-                    };
-                    web_sys::console::log_1(&format!("vfs save failed: {:?}", error).into());
-                    reject.call1(&JsValue::NULL, &error).unwrap();
-                }
-            }) as Box<dyn FnMut(_)>);
-            
-            request.set_onsuccess(Some(success_closure.as_ref().unchecked_ref()));
-            request.set_onerror(Some(error_closure.as_ref().unchecked_ref()));
-            success_closure.forget();
-            error_closure.forget();
-        });
+        let store = transaction.store(STORE_NAME)
+            .map_err(|e| JsValue::from_str(&format!("store error: {:?}", e)))?;
         
-        JsFuture::from(promise).await?;
-        web_sys::console::log_1(&"vfs save operation finished".into());
+        // put the data - rexie handles all the promise complexity for us
+        store.put(&JsValue::from_str(&serialized), Some(&JsValue::from_str(VFS_KEY)))
+            .await
+            .map_err(|e| JsValue::from_str(&format!("put error: {:?}", e)))?;
+        
+        web_sys::console::log_1(&"vfs save completed successfully with rexie".into());
         Ok(())
     }
 
-    /// load a single node from indexeddb
-    pub async fn load_node(&self, path: &str) -> Result<Option<VfsNode>, JsValue> {
-        if path == "/" {
-            match self.load_vfs().await {
-                Ok(vfs) => Ok(Some(vfs.root)),
-                Err(_) => Ok(None),
-            }
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// load entire vfs from indexeddb
-    pub async fn load_vfs(&self) -> Result<VirtualFileSystem, JsValue> {
-        web_sys::console::log_1(&"starting vfs load...".into());
+    /// load entire vfs using rexie
+    pub async fn load_vfs(&self) -> std::result::Result<VirtualFileSystem, JsValue> {
+        web_sys::console::log_1(&"starting vfs load with rexie...".into());
         
-        let db = self.db.as_ref().ok_or("Database not initialized")?;
-        let transaction = db.transaction_with_str(STORE_NAME)?;
-        let store = transaction.object_store(STORE_NAME)?;
+        let db = self.db.as_ref().ok_or("database not initialized")?;
         
-        let request = store.get(&JsValue::from_str("__VFS_ROOT__"))?;
+        // start transaction and load
+        let transaction = db.transaction(&[STORE_NAME], TransactionMode::ReadOnly)
+            .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
         
-        // wait for get operation to complete
-        let promise = js_sys::Promise::new(&mut |resolve, reject| {
-            let success_closure = Closure::wrap(Box::new({
-                let request = request.clone();
-                move |_: Event| {
-                    let result = request.result().unwrap();
-                    web_sys::console::log_1(&format!("vfs load got result: {:?}", result).into());
-                    resolve.call1(&JsValue::NULL, &result).unwrap();
-                }
-            }) as Box<dyn FnMut(_)>);
-            
-            let error_closure = Closure::wrap(Box::new({
-                let request = request.clone();
-                move |_: Event| {
-                    let error = match request.error() {
-                        Ok(Some(dom_err)) => JsValue::from(dom_err),
-                        Ok(None) => JsValue::from_str("unknown load error"),
-                        Err(js_err) => js_err,
-                    };
-                    web_sys::console::log_1(&format!("vfs load failed: {:?}", error).into());
-                    reject.call1(&JsValue::NULL, &error).unwrap();
-                }
-            }) as Box<dyn FnMut(_)>);
-            
-            request.set_onsuccess(Some(success_closure.as_ref().unchecked_ref()));
-            request.set_onerror(Some(error_closure.as_ref().unchecked_ref()));
-            success_closure.forget();
-            error_closure.forget();
-        });
+        let store = transaction.store(STORE_NAME)
+            .map_err(|e| JsValue::from_str(&format!("store error: {:?}", e)))?;
         
-        let result = JsFuture::from(promise).await?;
+        // get the data - rexie returns JsValue (undefined if not found)
+        let result = store.get(&JsValue::from_str(VFS_KEY))
+            .await
+            .map_err(|e| JsValue::from_str(&format!("get error: {:?}", e)))?;
         
-        if result.is_undefined() || result.is_null() {
+        let serialized = if result.is_undefined() || result.is_null() {
             web_sys::console::log_1(&"no saved vfs data found, returning fresh vfs".into());
-            // no saved data, return fresh vfs
             return Ok(VirtualFileSystem::new());
-        }
-        
-        let serialized = result.as_string()
-            .ok_or_else(|| JsValue::from_str("invalid data format"))?;
+        } else {
+            result.as_string().ok_or_else(|| JsValue::from_str("invalid data format"))?
+        };
         
         web_sys::console::log_1(&format!("deserializing vfs data: {} bytes", serialized.len()).into());
         
@@ -429,79 +298,78 @@ impl PersistentStorage {
         let mut vfs = VirtualFileSystem::new();
         vfs.root = root;
         
-        web_sys::console::log_1(&"vfs load completed successfully".into());
+        web_sys::console::log_1(&"vfs load completed successfully with rexie".into());
         Ok(vfs)
     }
 
-    /// delete node from indexeddb
-    pub async fn delete_node(&self, _path: &str) -> Result<(), JsValue> {
-        let db = self.db.as_ref().ok_or("Database not initialized")?;
+    /// save a single node (not really needed, but keeping for compatibility)
+    pub async fn save_node(&self, _path: &str, _node: &VfsNode) -> std::result::Result<(), JsValue> {
+        // with rexie we save the entire vfs each time for simplicity
+        Err(JsValue::from_str("use save_vfs instead - rexie saves entire filesystem atomically"))
+    }
+
+    /// load a single node (not really used)
+    pub async fn load_node(&self, path: &str) -> std::result::Result<Option<VfsNode>, JsValue> {
+        if path == "/" {
+            match self.load_vfs().await {
+                Ok(vfs) => Ok(Some(vfs.root)),
+                Err(_) => Ok(None),
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// delete all stored data
+    pub async fn delete_node(&self, _path: &str) -> std::result::Result<(), JsValue> {
+        let db = self.db.as_ref().ok_or("database not initialized")?;
         
-        // create readwrite transaction  
-        let transaction = db.transaction_with_str_and_mode(STORE_NAME, IdbTransactionMode::Readwrite)?;
-        let store = transaction.object_store(STORE_NAME)?;
+        let transaction = db.transaction(&[STORE_NAME], TransactionMode::ReadWrite)
+            .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
         
-        let request = store.delete(&JsValue::from_str("__VFS_ROOT__"))?;
+        let store = transaction.store(STORE_NAME)
+            .map_err(|e| JsValue::from_str(&format!("store error: {:?}", e)))?;
         
-        // wait for delete to complete
-        let promise = js_sys::Promise::new(&mut |resolve, reject| {
-            let success_closure = Closure::wrap(Box::new({
-                let request = request.clone();
-                move |_: Event| {
-                    resolve.call0(&JsValue::NULL).unwrap();
-                }
-            }) as Box<dyn FnMut(_)>);
-            
-            let error_closure = Closure::wrap(Box::new({
-                let request = request.clone();
-                move |_: Event| {
-                    let error = match request.error() {
-                        Ok(Some(dom_err)) => JsValue::from(dom_err),
-                        Ok(None) => JsValue::from_str("unknown delete error"),
-                        Err(js_err) => js_err,
-                    };
-                    reject.call1(&JsValue::NULL, &error).unwrap();
-                }
-            }) as Box<dyn FnMut(_)>);
-            
-            request.set_onsuccess(Some(success_closure.as_ref().unchecked_ref()));
-            request.set_onerror(Some(error_closure.as_ref().unchecked_ref()));
-            success_closure.forget();
-            error_closure.forget();
-        });
+        store.delete(&JsValue::from_str(VFS_KEY))
+            .await
+            .map_err(|e| JsValue::from_str(&format!("delete error: {:?}", e)))?;
         
-        JsFuture::from(promise).await?;
+        web_sys::console::log_1(&"storage cleared successfully".into());
         Ok(())
     }
 
     /// get storage statistics
-    pub async fn get_storage_stats(&self) -> Result<JsValue, JsValue> {
-        let db = self.db.as_ref().ok_or("Database not initialized")?;
-        let _transaction = db.transaction_with_str(STORE_NAME)?;
+    pub async fn get_storage_stats(&self) -> std::result::Result<JsValue, JsValue> {
+        let db = self.db.as_ref().ok_or("database not initialized")?;
         
-        // for now, return simplified stats without waiting for async operations
+        let transaction = db.transaction(&[STORE_NAME], TransactionMode::ReadOnly)
+            .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
+        
+        let store = transaction.store(STORE_NAME)
+            .map_err(|e| JsValue::from_str(&format!("store error: {:?}", e)))?;
+        
+        let result = store.get(&JsValue::from_str(VFS_KEY))
+            .await
+            .map_err(|e| JsValue::from_str(&format!("get error: {:?}", e)))?;
+        
+        let stored_size = if result.is_undefined() || result.is_null() {
+            0
+        } else {
+            result.as_string().map(|s| s.len()).unwrap_or(0)
+        };
+        
         let stats = serde_json::json!({
-            "node_count": 1,
-            "total_original_size": 0,
-            "total_stored_size": 0,
-            "compression_ratio": 1.0,
             "storage_type": "IndexedDB",
             "database_name": DB_NAME,
             "store_name": STORE_NAME,
-            "database_version": DB_VERSION,
-            "message": "full stats calculation requires async operations"
+            "stored_size_bytes": stored_size,
+            "stored_size_kb": stored_size as f64 / 1024.0,
+            "compression_threshold": COMPRESSION_THRESHOLD,
+            "has_data": stored_size > 0,
+            "vfs_key": VFS_KEY
         });
         
         serde_wasm_bindgen::to_value(&stats)
-            .map_err(|e| JsValue::from_str(&format!("Serialization error: {}", e)))
-    }
-
-    /// calculate original size of stored vfs recursively
-    fn calculate_original_size(&self, node: &StoredNode) -> usize {
-        match node {
-            StoredNode::File(file) => file.original_size,
-            StoredNode::Directory(dir) => dir.children.values().map(|child| self.calculate_original_size(child)).sum(),
-            StoredNode::Symlink(_) => 0,
-        }
+            .map_err(|e| JsValue::from_str(&format!("serialization error: {}", e)))
     }
 } 
