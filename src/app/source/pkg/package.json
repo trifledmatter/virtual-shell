@@ -1,0 +1,15 @@
+{
+  "name": "source",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "source_bg.wasm",
+    "source.js",
+    "source.d.ts"
+  ],
+  "main": "source.js",
+  "types": "source.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
