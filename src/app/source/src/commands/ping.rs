@@ -60,16 +60,17 @@ impl Command for PingCommand {
             use std::time::Instant;
 
             // not really using this, but whatever
-            let mut results: Vec<()> = Vec::new();
+            let _results: Vec<()> = Vec::new();
             let start_time = Instant::now();
             let mut sent = 0;
             let mut received = 0;
             let mut total_rtt = 0.0;
             let mut min_rtt = f64::MAX;
             let mut max_rtt = 0.0;
-            let mut last_reply = 0.0;
             let mut output = String::new();
-            for seq in 0..count {
+            // clone url so we don't borrow it across await/block_on
+            for _seq in 0..count {
+                let url_owned = url.clone();
                 if let Some(deadline_ms) = deadline {
                     if start_time.elapsed().as_millis() as f64 > deadline_ms {
                         break;
@@ -79,7 +80,7 @@ impl Command for PingCommand {
                 let mut opts = RequestInit::new();
                 opts.method("HEAD");
                 opts.mode(RequestMode::Cors);
-                let request = match Request::new_with_str_and_init(&url, &opts) {
+                let request = match Request::new_with_str_and_init(&url_owned, &opts) {
                     Ok(req) => req,
                     Err(_) => {
                         if !quiet { output.push_str("[ping] Invalid URL\n"); }
@@ -101,23 +102,25 @@ impl Command for PingCommand {
                             total_rtt += rtt;
                             if rtt < min_rtt { min_rtt = rtt; }
                             if rtt > max_rtt { max_rtt = rtt; }
-                            last_reply = rtt;
                             if !quiet {
-                                output.push_str(&format!("[ping] {}: reply, status {}, time {:.2} ms\n", url, status, rtt));
+                                output.push_str(&format!("[ping] {}: reply, status {}, time {:.2} ms\n", url_owned, status, rtt));
                             }
                         } else {
                             if !quiet {
-                                output.push_str(&format!("[ping] {}: no reply, status {}\n", url, status));
+                                output.push_str(&format!("[ping] {}: no reply, status {}\n", url_owned, status));
                             }
                         }
                     }
                     Err(_) => {
                         if !quiet {
-                            output.push_str(&format!("[ping] {}: network error or host unreachable\n", url));
+                            output.push_str(&format!(
+                                "[ping] {}: network error or host unreachable\n[ping] note: most public sites block browser requests due to CORS, so this is probably not your fault. try a CORS-friendly test endpoint like https://httpbin.org/get\n",
+                                url_owned
+                            ));
                         }
                     }
                 }
-                if seq < count - 1 {
+                if count > 1 {
                     block_on(TimeoutFuture::new(interval as u32));
                 }
             }
@@ -125,7 +128,7 @@ impl Command for PingCommand {
             if !quiet {
                 output.push_str(&format!(
                     "\n--- {} ping statistics ---\n{} packets transmitted, {} received, {:.1}% packet loss\n",
-                    url, sent, received, 100.0 * (sent - received) as f64 / sent as f64
+                    url.as_str(), sent, received, 100.0 * (sent - received) as f64 / sent as f64
                 ));
                 if received > 0 {
                     output.push_str(&format!(

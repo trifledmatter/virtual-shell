@@ -68,8 +68,8 @@ impl Command for CurlCommand {
 
             // set up the request, blah blah
             let mut opts = RequestInit::new();
-            opts.method(&method);
-            opts.mode(RequestMode::Cors);
+            opts.set_method(&method);
+            opts.set_mode(RequestMode::Cors);
             let headers = Headers::new().unwrap();
             if let Some(ua) = &user_agent {
                 headers.set("User-Agent", ua).ok();
@@ -79,15 +79,27 @@ impl Command for CurlCommand {
                     headers.set(k.trim(), v.trim()).ok();
                 }
             }
-            opts.headers(&headers);
-            let request = match Request::new_with_str_and_init(&url, &opts) {
+            opts.set_headers(&headers);
+            // clone file path before any block_on to avoid aliasing ctx
+            let file_path = {
+                // try to get filename, or just make one up
+                let filename = output_file.clone().or_else(|| {
+                    // we can't get content-disposition header until after fetch, so just use a temp name for now
+                    None
+                }).unwrap_or_else(|| format!("curl-{}.bin", Uuid::new_v4()));
+                format!("{}/{}", ctx.cwd, filename)
+            };
+            let url_owned = url.clone();
+            let request = match Request::new_with_str_and_init(&url_owned, &opts) {
                 Ok(req) => req,
                 Err(_) => return Err("[curl] Invalid URL".to_string()),
             };
             let window = web_sys::window().unwrap();
             let resp_value = match block_on(JsFuture::from(window.fetch_with_request(&request))) {
                 Ok(val) => val,
-                Err(_) => return Err("[curl] Network error".to_string()),
+                Err(_) => return Err(format!(
+                    "[curl] Network error or host unreachable\n[curl] note: most public sites block browser requests due to CORS, so this is probably not your fault. try a CORS-friendly test endpoint like https://httpbin.org/get"
+                )),
             };
             let resp: Response = resp_value.dyn_into().unwrap();
             if !resp.ok() {
@@ -111,7 +123,7 @@ impl Command for CurlCommand {
                     }
                 }
             }
-            // try to get filename, or just make one up
+            // get filename from content-disposition if possible (after fetch)
             let filename = output_file.clone().or_else(|| {
                 resp.headers().get("content-disposition").ok().flatten()
                     .and_then(|cd| {
@@ -123,8 +135,8 @@ impl Command for CurlCommand {
                         })
                     })
             }).unwrap_or_else(|| format!("curl-{}.bin", Uuid::new_v4()));
+            let file_path = format!("{}/{}", ctx.cwd, filename);
             // get bytes (unless HEAD), whatever
-            let mut body_str = String::new();
             let mut file_written = false;
             if method != "HEAD" {
                 let buffer_promise = resp.array_buffer().unwrap();
@@ -136,7 +148,7 @@ impl Command for CurlCommand {
                 let mut bytes = vec![0; array.length() as usize];
                 array.copy_to(&mut bytes[..]);
                 // save to vfs, i guess
-                match ctx.vfs.create_file(&format!("{}/{}", ctx.cwd, filename), bytes) {
+                match ctx.vfs.create_file(&file_path, bytes) {
                     Ok(_) => file_written = true,
                     Err(e) => return Err(format!("[curl] Failed to save file: {}", e)),
                 }
