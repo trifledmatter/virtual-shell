@@ -7,6 +7,7 @@ pub mod commands;
 pub mod storage;
 
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures;
 use context::TerminalContext;
 use command::{CommandRegistry};
 use serde::{Serialize, Deserialize};
@@ -123,7 +124,7 @@ impl Terminal {
         let response = match command::run_command(input, &mut self.ctx, &self.registry) {
             Ok(output) => {
                 // Check for special storage markers
-                match output.as_str() {
+                let cmd_response = match output.as_str() {
                     "__STORAGE_MANUAL_SAVE__" => CommandResponse {
                         success: true,
                         output: "manually saving filesystem to storage...".to_string(),
@@ -154,7 +155,21 @@ impl Terminal {
                         output,
                         special_action: None,
                     },
+                };
+
+                // Check if this was a file-modifying command
+                let command_name = input.split_whitespace().next().unwrap_or("");
+                let is_modifying_command = matches!(command_name, 
+                    "edit" | "nano" | "touch" | "mkdir" | "rm" | "rmdir" | 
+                    "cp" | "mv" | "ln" | "chmod" | "chown" | "chgrp" | 
+                    "rawcreate" | "cpu" | "echo" | ">"
+                );
+
+                if is_modifying_command && cmd_response.success && cmd_response.special_action.is_none() {
+                    web_sys::console::log_1(&format!("filesystem modified by '{}' command - save needed", command_name).into());
                 }
+
+                cmd_response
             },
             Err(e) => CommandResponse {
                 success: false,
@@ -164,6 +179,68 @@ impl Terminal {
         };
 
         serde_wasm_bindgen::to_value(&response).unwrap()
+    }
+
+    /// Trigger a background save of the VFS to storage
+    #[wasm_bindgen]
+    pub fn trigger_save(&self) {
+        web_sys::console::log_1(&"trigger_save called".into());
+        
+        // Serialize the VFS
+        let stored_vfs = crate::storage::StoredVFS {
+            root: self.storage.node_to_stored(&self.ctx.vfs.root, "/"),
+            version: 1,
+        };
+        
+        let json = match serde_json::to_string(&stored_vfs) {
+            Ok(j) => j,
+            Err(e) => {
+                web_sys::console::log_1(&format!("save serialization failed: {}", e).into());
+                return;
+            }
+        };
+        
+        web_sys::console::log_1(&format!("attempting to save {} bytes to indexeddb", json.len()).into());
+        
+        // Use the rexie approach directly with spawn_local
+        let save_future = async move {
+            match rexie::Rexie::builder("vfs")
+                .version(1)
+                .add_object_store(rexie::ObjectStore::new("vfs_store"))
+                .build()
+                .await 
+            {
+                Ok(db) => {
+                    match db.transaction(&["vfs_store"], rexie::TransactionMode::ReadWrite) {
+                        Ok(tx) => {
+                            match tx.store("vfs_store") {
+                                Ok(store) => {
+                                    match store.put(&JsValue::from_str(&json), Some(&JsValue::from_str("vfs"))).await {
+                                        Ok(_) => {
+                                            web_sys::console::log_1(&"background save completed successfully".into());
+                                        }
+                                        Err(e) => {
+                                            web_sys::console::log_1(&format!("background save put failed: {:?}", e).into());
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    web_sys::console::log_1(&format!("background save store access failed: {:?}", e).into());
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            web_sys::console::log_1(&format!("background save transaction failed: {:?}", e).into());
+                        }
+                    }
+                }
+                Err(e) => {
+                    web_sys::console::log_1(&format!("background save db open failed: {:?}", e).into());
+                }
+            }
+        };
+        
+        wasm_bindgen_futures::spawn_local(save_future);
     }
 
     // get current working directory
@@ -279,12 +356,24 @@ impl Terminal {
         match result {
             Ok(_) => {
                 // automatically save to storage after successful write
-                let _ = self.storage.save_vfs(&self.ctx.vfs).await;
-                
-                serde_wasm_bindgen::to_value(&serde_json::json!({
-                    "success": true,
-                    "auto_saved": true,
-                })).unwrap()
+                web_sys::console::log_1(&"attempting to auto-save to storage...".into());
+                match self.storage.save_vfs(&self.ctx.vfs).await {
+                    Ok(_) => {
+                        web_sys::console::log_1(&"auto-save completed successfully".into());
+                        serde_wasm_bindgen::to_value(&serde_json::json!({
+                            "success": true,
+                            "auto_saved": true,
+                        })).unwrap()
+                    }
+                    Err(e) => {
+                        web_sys::console::log_1(&format!("auto-save failed: {:?}", e).into());
+                        serde_wasm_bindgen::to_value(&serde_json::json!({
+                            "success": true,
+                            "auto_saved": false,
+                            "storage_error": format!("{:?}", e),
+                        })).unwrap()
+                    }
+                }
             }
             Err(e) => {
                 serde_wasm_bindgen::to_value(&serde_json::json!({

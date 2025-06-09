@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::JsFuture;
 use serde::{Serialize, Deserialize};
 use crate::vfs::{VirtualFileSystem, VfsNode};
 use flate2::{Compression, read::DeflateDecoder, write::DeflateEncoder};
@@ -7,10 +8,10 @@ use std::io::{Read, Write};
 use base64::{Engine as _, engine::general_purpose};
 use rexie::*;
 
-const DB_NAME: &str = "TrifledOS_VFS";
+const DB_NAME: &str = "filesystem";
 const DB_VERSION: u32 = 1;
-const STORE_NAME: &str = "filesystem";
-const VFS_KEY: &str = "vfs_root";
+const STORE_NAME: &str = "vfs_store";
+const VFS_KEY: &str = "vfs";
 const COMPRESSION_THRESHOLD: usize = 1024; // only compress files > 1kb
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -64,20 +65,20 @@ impl PersistentStorage {
         }
     }
 
-    /// init rexie database - much cleaner than raw indexeddb
+    /// init rexie database following the user's example pattern
     pub async fn init(&mut self) -> std::result::Result<(), JsValue> {
-        web_sys::console::log_1(&"initializing rexie database...".into());
+        web_sys::console::log_1(&"initializing storage database...".into());
         
-        // build database with rexie builder pattern
+        // build database with proper async handling
         let rexie = Rexie::builder(DB_NAME)
             .version(DB_VERSION)
             .add_object_store(ObjectStore::new(STORE_NAME))
             .build()
             .await
-            .map_err(|e| JsValue::from_str(&format!("rexie build error: {:?}", e)))?;
+            .map_err(|e| JsValue::from_str(&format!("database creation failed: {:?}", e)))?;
         
         self.db = Some(rexie);
-        web_sys::console::log_1(&"rexie database initialized successfully".into());
+        web_sys::console::log_1(&"storage database initialized successfully".into());
         Ok(())
     }
 
@@ -112,7 +113,7 @@ impl PersistentStorage {
     }
 
     /// convert vfs node to stored format recursively
-    fn node_to_stored(&self, node: &VfsNode, path: &str) -> StoredNode {
+    pub fn node_to_stored(&self, node: &VfsNode, path: &str) -> StoredNode {
         match node {
             VfsNode::File { content, permissions, mtime, .. } => {
                 let (processed_content, compressed) = Self::compress_data(content)
@@ -229,9 +230,9 @@ impl PersistentStorage {
         }
     }
 
-    /// save entire vfs using rexie - much cleaner!
+    /// save entire vfs using proper transaction handling
     pub async fn save_vfs(&self, vfs: &VirtualFileSystem) -> std::result::Result<(), JsValue> {
-        web_sys::console::log_1(&"starting vfs save with rexie...".into());
+        web_sys::console::log_1(&"starting vfs save to indexeddb...".into());
         
         let db = self.db.as_ref().ok_or("database not initialized")?;
         
@@ -241,74 +242,74 @@ impl PersistentStorage {
             version: 1,
         };
         
-        let serialized = serde_json::to_string(&stored_vfs)
-            .map_err(|e| JsValue::from_str(&format!("serialization error: {}", e)))?;
+        let json = serde_json::to_string(&stored_vfs)
+            .map_err(|e| JsValue::from_str(&format!("serialization failed: {}", e)))?;
         
-        web_sys::console::log_1(&format!("serialized vfs size: {} bytes", serialized.len()).into());
+        web_sys::console::log_1(&format!("serialized vfs: {} bytes", json.len()).into());
         
-        // start transaction and save - rexie makes this super clean!
-        let transaction = db.transaction(&[STORE_NAME], TransactionMode::ReadWrite)
-            .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
+        // create readwrite transaction
+        let tx = db.transaction(&[STORE_NAME], TransactionMode::ReadWrite)
+            .map_err(|e| JsValue::from_str(&format!("transaction creation failed: {:?}", e)))?;
         
-        let store = transaction.store(STORE_NAME)
-            .map_err(|e| JsValue::from_str(&format!("store error: {:?}", e)))?;
+        let store = tx.store(STORE_NAME)
+            .map_err(|e| JsValue::from_str(&format!("store access failed: {:?}", e)))?;
         
-        // put the data - rexie handles all the promise complexity for us
-        store.put(&JsValue::from_str(&serialized), Some(&JsValue::from_str(VFS_KEY)))
+        // put the data with our key
+        store.put(&JsValue::from_str(&json), Some(&JsValue::from_str(VFS_KEY)))
             .await
-            .map_err(|e| JsValue::from_str(&format!("put error: {:?}", e)))?;
+            .map_err(|e| JsValue::from_str(&format!("data storage failed: {:?}", e)))?;
         
-        web_sys::console::log_1(&"vfs save completed successfully with rexie".into());
+        web_sys::console::log_1(&"vfs successfully saved to indexeddb".into());
         Ok(())
     }
 
-    /// load entire vfs using rexie
+    /// load entire vfs with proper transaction handling  
     pub async fn load_vfs(&self) -> std::result::Result<VirtualFileSystem, JsValue> {
-        web_sys::console::log_1(&"starting vfs load with rexie...".into());
+        web_sys::console::log_1(&"starting vfs load from indexeddb...".into());
         
         let db = self.db.as_ref().ok_or("database not initialized")?;
         
-        // start transaction and load
-        let transaction = db.transaction(&[STORE_NAME], TransactionMode::ReadOnly)
-            .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
+        // create readonly transaction
+        let tx = db.transaction(&[STORE_NAME], TransactionMode::ReadOnly)
+            .map_err(|e| JsValue::from_str(&format!("read transaction failed: {:?}", e)))?;
         
-        let store = transaction.store(STORE_NAME)
-            .map_err(|e| JsValue::from_str(&format!("store error: {:?}", e)))?;
+        let store = tx.store(STORE_NAME)
+            .map_err(|e| JsValue::from_str(&format!("store access failed: {:?}", e)))?;
         
-        // get the data - rexie returns JsValue (undefined if not found)
+        // get the data
         let result = store.get(&JsValue::from_str(VFS_KEY))
             .await
-            .map_err(|e| JsValue::from_str(&format!("get error: {:?}", e)))?;
+            .map_err(|e| JsValue::from_str(&format!("data retrieval failed: {:?}", e)))?;
         
-        let serialized = if result.is_undefined() || result.is_null() {
-            web_sys::console::log_1(&"no saved vfs data found, returning fresh vfs".into());
+        if result.is_undefined() || result.is_null() {
+            web_sys::console::log_1(&"no saved vfs found, creating fresh filesystem".into());
             return Ok(VirtualFileSystem::new());
-        } else {
-            result.as_string().ok_or_else(|| JsValue::from_str("invalid data format"))?
-        };
+        }
         
-        web_sys::console::log_1(&format!("deserializing vfs data: {} bytes", serialized.len()).into());
+        let json = result.as_string()
+            .ok_or_else(|| JsValue::from_str("stored data is not a string"))?;
         
-        let stored_vfs: StoredVFS = serde_json::from_str(&serialized)
-            .map_err(|e| JsValue::from_str(&format!("deserialization error: {}", e)))?;
+        web_sys::console::log_1(&format!("deserializing vfs: {} bytes", json.len()).into());
+        
+        let stored_vfs: StoredVFS = serde_json::from_str(&json)
+            .map_err(|e| JsValue::from_str(&format!("deserialization failed: {}", e)))?;
 
         let root = self.stored_to_node(&stored_vfs.root)
-            .map_err(|e| JsValue::from_str(&format!("node conversion error: {}", e)))?;
+            .map_err(|e| JsValue::from_str(&format!("node reconstruction failed: {}", e)))?;
 
         let mut vfs = VirtualFileSystem::new();
         vfs.root = root;
         
-        web_sys::console::log_1(&"vfs load completed successfully with rexie".into());
+        web_sys::console::log_1(&"vfs successfully loaded from indexeddb".into());
         Ok(vfs)
     }
 
-    /// save a single node (not really needed, but keeping for compatibility)
+    /// save a single node (keeping for compatibility)
     pub async fn save_node(&self, _path: &str, _node: &VfsNode) -> std::result::Result<(), JsValue> {
-        // with rexie we save the entire vfs each time for simplicity
-        Err(JsValue::from_str("use save_vfs instead - rexie saves entire filesystem atomically"))
+        Err(JsValue::from_str("use save_vfs instead - saves entire filesystem atomically"))
     }
 
-    /// load a single node (not really used)
+    /// load a single node (keeping for compatibility)
     pub async fn load_node(&self, path: &str) -> std::result::Result<Option<VfsNode>, JsValue> {
         if path == "/" {
             match self.load_vfs().await {
@@ -324,15 +325,15 @@ impl PersistentStorage {
     pub async fn delete_node(&self, _path: &str) -> std::result::Result<(), JsValue> {
         let db = self.db.as_ref().ok_or("database not initialized")?;
         
-        let transaction = db.transaction(&[STORE_NAME], TransactionMode::ReadWrite)
-            .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
+        let tx = db.transaction(&[STORE_NAME], TransactionMode::ReadWrite)
+            .map_err(|e| JsValue::from_str(&format!("delete transaction failed: {:?}", e)))?;
         
-        let store = transaction.store(STORE_NAME)
-            .map_err(|e| JsValue::from_str(&format!("store error: {:?}", e)))?;
+        let store = tx.store(STORE_NAME)
+            .map_err(|e| JsValue::from_str(&format!("store access failed: {:?}", e)))?;
         
         store.delete(&JsValue::from_str(VFS_KEY))
             .await
-            .map_err(|e| JsValue::from_str(&format!("delete error: {:?}", e)))?;
+            .map_err(|e| JsValue::from_str(&format!("deletion failed: {:?}", e)))?;
         
         web_sys::console::log_1(&"storage cleared successfully".into());
         Ok(())
@@ -342,15 +343,15 @@ impl PersistentStorage {
     pub async fn get_storage_stats(&self) -> std::result::Result<JsValue, JsValue> {
         let db = self.db.as_ref().ok_or("database not initialized")?;
         
-        let transaction = db.transaction(&[STORE_NAME], TransactionMode::ReadOnly)
-            .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
+        let tx = db.transaction(&[STORE_NAME], TransactionMode::ReadOnly)
+            .map_err(|e| JsValue::from_str(&format!("stats transaction failed: {:?}", e)))?;
         
-        let store = transaction.store(STORE_NAME)
-            .map_err(|e| JsValue::from_str(&format!("store error: {:?}", e)))?;
+        let store = tx.store(STORE_NAME)
+            .map_err(|e| JsValue::from_str(&format!("store access failed: {:?}", e)))?;
         
         let result = store.get(&JsValue::from_str(VFS_KEY))
             .await
-            .map_err(|e| JsValue::from_str(&format!("get error: {:?}", e)))?;
+            .map_err(|e| JsValue::from_str(&format!("stats retrieval failed: {:?}", e)))?;
         
         let stored_size = if result.is_undefined() || result.is_null() {
             0
@@ -370,6 +371,6 @@ impl PersistentStorage {
         });
         
         serde_wasm_bindgen::to_value(&stats)
-            .map_err(|e| JsValue::from_str(&format!("serialization error: {}", e)))
+            .map_err(|e| JsValue::from_str(&format!("serialization failed: {}", e)))
     }
 } 

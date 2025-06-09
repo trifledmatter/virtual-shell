@@ -10,6 +10,10 @@ export class Terminal {
    */
   init_with_storage(): Promise<any>;
   execute_command(input: string): any;
+  /**
+   * Trigger a background save of the VFS to storage
+   */
+  trigger_save(): void;
   get_current_directory(): string;
   list_files(path?: string | null): any;
   read_file(path: string): any;
@@ -48,6 +52,7 @@ export interface InitOutput {
   readonly terminal_new: () => number;
   readonly terminal_init_with_storage: (a: number) => any;
   readonly terminal_execute_command: (a: number, b: number, c: number) => any;
+  readonly terminal_trigger_save: (a: number) => void;
   readonly terminal_get_current_directory: (a: number) => [number, number];
   readonly terminal_list_files: (a: number, b: number, c: number) => any;
   readonly terminal_read_file: (a: number, b: number, c: number) => any;
@@ -72,10 +77,10 @@ export interface InitOutput {
   readonly __wbindgen_free: (a: number, b: number, c: number) => void;
   readonly __wbindgen_export_6: WebAssembly.Table;
   readonly _dyn_core__ops__function__FnMut_____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__hb7ade31a031a667e: (a: number, b: number) => void;
-  readonly closure204_externref_shim_multivalue_shim: (a: number, b: number, c: any) => [number, number];
+  readonly closure209_externref_shim_multivalue_shim: (a: number, b: number, c: any) => [number, number];
   readonly __externref_table_dealloc: (a: number) => void;
-  readonly closure256_externref_shim: (a: number, b: number, c: any) => void;
-  readonly closure919_externref_shim: (a: number, b: number, c: any, d: any) => void;
+  readonly closure261_externref_shim: (a: number, b: number, c: any) => void;
+  readonly closure924_externref_shim: (a: number, b: number, c: any, d: any) => void;
   readonly __wbindgen_start: () => void;
 }
 
